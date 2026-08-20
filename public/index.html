@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IESCO · MCB Collection Dashboard</title>
+<link rel="icon" href="/logo.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --navy: #0b3556;
+    --navy-deep: #082944;
+    --paper: #f4f6f8;
+    --panel: #ffffff;
+    --line: #e1e6ea;
+    --muted: #64748b;
+    --accent: #c8102e;
+    --accent-soft: #fdeaec;
+    --gold: #c8951f;
+    --credit: #157347;
+    --debit: #b02a1f;
+    --mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; font-family: var(--sans); background: var(--paper); color: #1c2b3a; }
+  a { color: inherit; }
+
+  .app { display: flex; min-height: 100vh; }
+
+  /* ---------- Sidebar ---------- */
+  .side {
+    width: 240px; flex: none; background: linear-gradient(180deg, var(--navy), var(--navy-deep));
+    color: #dce7f0; display: flex; flex-direction: column;
+  }
+  .side-brand { display: flex; align-items: center; gap: 10px; padding: 20px 18px 16px; border-bottom: 1px solid rgba(255,255,255,0.12); }
+  .side-brand img { width: 38px; height: 38px; border-radius: 50%; background: #fff; padding: 2px; }
+  .side-brand .t1 { font-size: 13px; font-weight: 700; letter-spacing: .02em; line-height: 1.25; }
+  .side-brand .t2 { font-size: 11px; color: #93a9bd; margin-top: 1px; }
+
+  .nav-group { padding: 14px 10px 4px; }
+  .nav-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em; color: #6f8aa2; padding: 6px 10px 6px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 7px; cursor: pointer;
+    font-size: 13.5px; color: #cddceb; margin-bottom: 1px; transition: background .12s;
+  }
+  .nav-item:hover { background: rgba(255,255,255,0.07); }
+  .nav-item.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .nav-offices { max-height: 260px; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px; padding: 2px 10px; }
+  .nav-offices .nav-item { padding: 6px 8px; font-family: var(--mono); font-size: 12.5px; justify-content: center; }
+  .side-foot { margin-top: auto; padding: 14px 18px; font-size: 11px; color: #6f8aa2; border-top: 1px solid rgba(255,255,255,0.12); }
+
+  /* ---------- Main ---------- */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    background: var(--panel); border-bottom: 1px solid var(--line); padding: 16px 26px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .topbar h1 { margin: 0; font-size: 18px; font-weight: 700; }
+  .topbar .sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .topbar-actions { display: flex; align-items: center; gap: 10px; }
+  .search {
+    padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px;
+    width: 240px; font-family: var(--sans); background: var(--paper);
+  }
+  .btn {
+    padding: 8px 14px; border-radius: 7px; border: 1px solid var(--navy); background: var(--navy);
+    color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--sans);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { opacity: .92; }
+  .btn.ghost { background: transparent; color: var(--navy); }
+
+  .content { flex: 1; overflow: auto; padding: 22px 26px; }
+
+  /* ---------- Cards / abstract ---------- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card .label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+  .card .value { font-family: var(--mono); font-size: 21px; font-weight: 700; color: var(--navy); }
+  .card .value.credit { color: var(--credit); }
+  .card .value.debit { color: var(--debit); }
+
+  /* ---------- Table ---------- */
+  .table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.wrap-table { table-layout: fixed; }
+  thead th {
+    position: sticky; background: #eef2f6; color: var(--navy); text-align: left; padding: 9px 10px;
+    font-weight: 700; border-bottom: 2px solid var(--line); white-space: nowrap; z-index: 2; font-size: 12px;
+    text-transform: uppercase; letter-spacing: .03em;
+  }
+  td.wrap, th.wrap { white-space: normal; word-break: break-word; }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody tr:hover { background: #f8fafc; }
+  .grid th, .grid td { border-right: 1px solid var(--line); }
+  .grid th:last-child, .grid td:last-child { border-right: none; }
+  .num { font-family: var(--mono); text-align: right; }
+  .credit { color: var(--credit); }
+  .debit { color: var(--debit); }
+
+  .pager { display: flex; align-items: center; gap: 10px; padding: 12px; font-size: 13px; color: var(--muted); }
+  .pager button { font-family: var(--sans); font-size: 13px; padding: 5px 12px; border-radius: 5px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+  .pager button:disabled { opacity: .4; cursor: default; }
+
+  .state-msg { color: var(--muted); font-size: 14px; padding: 50px 0; text-align: center; }
+
+  /* ---------- Branch picker ---------- */
+  .branch-picker { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  .branch-picker .search { width: 320px; }
+  .branch-results { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-bottom: 18px; }
+  .branch-result { padding: 8px 14px; font-size: 13px; cursor: pointer; display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); }
+  .branch-result:last-child { border-bottom: none; }
+  .branch-result:hover { background: var(--accent-soft); }
+  .branch-result .code { font-family: var(--mono); color: var(--navy); font-weight: 700; }
+  .branch-result .meta { color: var(--muted); font-size: 12px; }
+
+  @media (max-width: 800px) {
+    .side { display: none; }
+    .search { width: 160px; }
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <nav class="side">
+      <div class="side-brand">
+        <img src="/logo.png" alt="IESCO logo">
+        <div>
+          <div class="t1">IESCO</div>
+          <div class="t2">MCB Collection Dashboard</div>
+        </div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-item active" data-view="home">🏠 Home</div>
+        <div class="nav-item" data-view="statement">📄 Statement</div>
+        <div class="nav-item" data-view="reversal">↩️ Reversal</div>
+        <div class="nav-item" data-view="branch">🔎 Branch-wise Statement</div>
+      </div>
+
+      <div class="nav-group" style="flex:1; overflow:hidden; display:flex; flex-direction:column;">
+        <div class="nav-label">Offices</div>
+        <div class="nav-offices" id="officeNav"></div>
+      </div>
+
+      <div class="side-foot" id="lastUpdated">Loading status…</div>
+    </nav>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1 id="viewTitle">Home</h1>
+          <div class="sub" id="viewSub">Overview and quick access</div>
+        </div>
+        <div class="topbar-actions" id="topActions">
+          <input class="search" id="searchBox" placeholder="Search this view…" style="display:none">
+          <button class="btn ghost" id="downloadBtn" style="display:none">⬇ Download Excel</button>
+        </div>
+      </div>
+      <div class="content" id="content">
+        <div class="state-msg">Loading…</div>
+      </div>
+    </main>
+  </div>
+
+<script>
+const OFFICE_CODES = [
+  '1411','1412','1413','1421','1424','1425','1431','1432','1435',
+  '1441','1442','1443','1451','1452','1455','1456','1461','1463','1462','1464'
+];
+const PAGE_SIZE = 100;
+const HEADER_ROW_HEIGHT = 34;
+
+let sheetCache = {};       // name -> rows (2D array), cached for the session
+let branchDirectory = [];  // [{office, name, mis, code}]
+let currentHeaderRows = [];
+let currentRows = [];
+let filteredRows = [];
+let currentViewLabel = 'home';
+let page = 0;
+let renderTargetId = 'content';
+
+async function fetchSheet(name) {
+  if (sheetCache[name]) return sheetCache[name];
+  const res = await fetch('/api/sheet?name=' + encodeURIComponent(name));
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  sheetCache[name] = data.rows;
+  return data.rows;
+}
+
+function setActiveNav(el) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  el.classList.add('active');
+}
+function setHeader(title, sub) {
+  document.getElementById('viewTitle').textContent = title;
+  document.getElementById('viewSub').textContent = sub;
+}
+function showLoading() {
+  document.getElementById('content').innerHTML = '<div class="state-msg">Loading…</div>';
+}
+function showError(err) {
+  document.getElementById('content').innerHTML =
+    '<div class="state-msg">Could not load this view: ' + escapeHtml_(err.message || String(err)) + '</div>';
+}
+function toolbarFor(view) {
+  const search = document.getElementById('searchBox');
+  const dl = document.getElementById('downloadBtn');
+  const show = view !== 'home' && view !== 'branch';
+  search.style.display = show ? '' : 'none';
+  dl.style.display = show ? '' : 'none';
+}
+
+/* ---------------- HOME ---------------- */
+async function loadHome() {
+  currentViewLabel = 'home';
+  setHeader('Home', 'Overview and quick access');
+  toolbarFor('home');
+  showLoading();
+  try {
+    const rows = await fetchSheet('Statement');
+    const header = rows[0];
+    const data = rows.slice(1);
+    const debitIdx = header.findIndex(h => /debit/i.test(h));
+    const creditIdx = header.findIndex(h => /credit/i.test(h));
+    const dateIdx = header.findIndex(h => /^date$/i.test(h));
+
+    let totalDebit = 0, totalCredit = 0, lastDate = '';
+    data.forEach(r => {
+      totalDebit += parseFloat(String(r[debitIdx]).replace(/,/g, '')) || 0;
+      totalCredit += parseFloat(String(r[creditIdx]).replace(/,/g, '')) || 0;
+      if (r[dateIdx]) lastDate = r[dateIdx];
+    });
+
+    let html = '<div class="cards">' +
+      card('Total Transactions', data.length.toLocaleString()) +
+      card('Total Credit', fmtMoney(totalCredit), 'credit') +
+      card('Total Debit', fmtMoney(totalDebit), 'debit') +
+      card('Offices Tracked', OFFICE_CODES.length) +
+      card('Last Statement Date', lastDate || '—') +
+      '</div>';
+
+    html += '<div class="cards" style="grid-template-columns:1fr;">' +
+      '<div class="card"><div class="label">Quick access</div>' +
+      '<div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;">' +
+      quickBtn('statement', 'View full Statement') +
+      quickBtn('reversal', 'View Reversals') +
+      quickBtn('branch', 'Search a branch') +
+      '</div></div></div>';
+
+    document.getElementById('content').innerHTML = html;
+    document.querySelectorAll('[data-goto]').forEach(b => {
+      b.addEventListener('click', () => {
+        const view = b.getAttribute('data-goto');
+        document.querySelector('[data-view="' + view + '"]').click();
+      });
+    });
+  } catch (err) { showError(err); }
+}
+function card(label, value, cls) {
+  return '<div class="card"><div class="label">' + label + '</div><div class="value ' + (cls || '') + '">' + value + '</div></div>';
+}
+function quickBtn(view, label) {
+  return '<button class="btn ghost" data-goto="' + view + '">' + label + '</button>';
+}
+function fmtMoney(n) {
+  return 'Rs ' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/* ---------------- STATEMENT / REVERSAL ---------------- */
+async function loadStatement() {
+  currentViewLabel = 'statement';
+  setHeader('Statement', 'Full transaction ledger');
+  toolbarFor('statement');
+  showLoading();
+  try {
+    const rows = await fetchSheet('Statement');
+    onData(rows, 1, 'content');
+  } catch (err) { showError(err); }
+}
+async function loadReversal() {
+  currentViewLabel = 'reversal';
+  setHeader('Reversal', 'Transactions logged as reversals');
+  toolbarFor('reversal');
+  showLoading();
+  try {
+    const rows = await fetchSheet('Reversal');
+    onData(rows, 1, 'content');
+  } catch (err) { showError(err); }
+}
+async function loadOffice(code) {
+  currentViewLabel = 'office_' + code;
+  setHeader('Office ' + code, 'Daily collection summary');
+  toolbarFor('office');
+  showLoading();
+  try {
+    const rows = await fetchSheet(code);
+    padBranchCodeRow(rows);
+    renderOfficeAbstract(rows);
+    onData(rows, 3, 'officeTableArea');
+  } catch (err) { showError(err); }
+}
+function padBranchCodeRow(rows) {
+  if (rows.length > 2) {
+    rows[2] = rows[2].map(cell => /^\d+$/.test(String(cell).trim()) ? String(cell).padStart(4, '0') : cell);
+  }
+}
+function renderOfficeAbstract(rows) {
+  if (rows.length < 4) return;
+  const names = rows[0], data = rows.slice(3).filter(r => r.length && r[0]);
+  let grandTotal = 0;
+  const perCol = names.map((_, i) => 0);
+  data.forEach(r => {
+    for (let i = 1; i < r.length; i++) {
+      const v = parseFloat(String(r[i]).replace(/,/g, '')) || 0;
+      perCol[i] += v;
+      if (!/total/i.test(names[i] || '')) grandTotal += 0; // grand total computed from TOTAL col if present, else summed below
+    }
+  });
+  const totalColIdx = names.findIndex(n => /total/i.test(n || ''));
+  const grand = totalColIdx > -1 ? perCol[totalColIdx] : perCol.slice(1).reduce((a, b) => a + b, 0);
+
+  const abstractHtml = '<div class="cards">' +
+    card('Days Recorded', data.length) +
+    card('Branches', names.length - 1 - (totalColIdx > -1 ? 1 : 0)) +
+    card('Grand Total Collected', fmtMoney(grand), 'credit') +
+    '</div>';
+  document.getElementById('content').innerHTML = abstractHtml + '<div id="officeTableArea"></div>';
+}
+
+function onData(rows, headerRowCount, targetId) {
+  renderTargetId = targetId;
+  if (!rows || rows.length === 0) {
+    const target = document.getElementById(targetId);
+    if (target) target.innerHTML = '<div class="state-msg">No data in this view yet.</div>';
+    return;
+  }
+  currentHeaderRows = rows.slice(0, headerRowCount);
+  currentRows = rows.slice(headerRowCount);
+  const searchBox = document.getElementById('searchBox');
+  if (searchBox) searchBox.value = '';
+  page = 0;
+  applyFilter('');
+}
+
+function applyFilter(term) {
+  const t = term.trim().toLowerCase();
+  filteredRows = !t ? currentRows : currentRows.filter(row => row.some(cell => String(cell).toLowerCase().indexOf(t) !== -1));
+  page = 0;
+  render();
+}
+
+function lastHeaderRow() { return currentHeaderRows[currentHeaderRows.length - 1] || []; }
+function isNumericCol(i) {
+  const label = String(lastHeaderRow()[i] || '');
+  return /debit|credit|balance/i.test(label) || (currentHeaderRows.length === 3 && i > 0);
+}
+function isWrapCol(i) {
+  return /description/i.test(String(lastHeaderRow()[i] || ''));
+}
+function colWidth(i) {
+  const label = String(lastHeaderRow()[i] || '').toLowerCase();
+  if (isWrapCol(i)) return null;
+  if (/date/.test(label)) return '100px';
+  if (/month/.test(label)) return '110px';
+  if (label === 'branch') return '90px';
+  if (/debit|credit|balance/.test(label)) return '130px';
+  if (label === 'reversal') return '90px';
+  return '110px';
+}
+
+function render() {
+  const isOfficeView = currentHeaderRows.length === 3;
+  const start = page * PAGE_SIZE;
+  const pageRows = filteredRows.slice(start, start + PAGE_SIZE);
+
+  let html = '<div class="table-wrap"><table class="' + (isOfficeView ? 'grid' : 'wrap-table') + '"><thead>';
+  currentHeaderRows.forEach((hRow, ri) => {
+    html += '<tr>';
+    hRow.forEach((h, i) => {
+      const align = isNumericCol(i) ? 'text-align:right' : '';
+      const w = isOfficeView ? null : colWidth(i);
+      const widthStyle = w ? ('width:' + w + ';') : '';
+      const wrapCls = (!isOfficeView && isWrapCol(i)) ? ' wrap' : '';
+      html += '<th class="' + wrapCls + '" style="top:' + (ri * HEADER_ROW_HEIGHT) + 'px;' + align + widthStyle + '">' + escapeHtml_(h) + '</th>';
+    });
+    html += '</tr>';
+  });
+  html += '</thead><tbody>';
+
+  pageRows.forEach(row => {
+    html += '<tr>';
+    row.forEach((cell, i) => {
+      const label = String(lastHeaderRow()[i] || '').toLowerCase();
+      let cls = isNumericCol(i) ? 'num' : '';
+      if (!isOfficeView && isWrapCol(i)) cls += ' wrap';
+      if (label === 'credit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' credit';
+      if (label === 'debit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' debit';
+      const numVal = Number(String(cell).replace(/,/g, ''));
+      const display = isNumericCol(i) && cell !== '' && !isNaN(numVal) ? fmtNum(numVal) : escapeHtml_(cell);
+      html += '<td class="' + cls + '">' + display + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  html += '<div class="pager">' +
+    '<button id="prevBtn" ' + (page === 0 ? 'disabled' : '') + '>Previous</button>' +
+    '<span>Page ' + (page + 1) + ' of ' + totalPages + ' — ' + filteredRows.length + ' row(s)</span>' +
+    '<button id="nextBtn" ' + (page >= totalPages - 1 ? 'disabled' : '') + '>Next</button>' +
+    '</div></div>';
+
+  const target = document.getElementById(renderTargetId);
+  target.innerHTML = html;
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  if (prevBtn) prevBtn.onclick = () => { page--; render(); };
+  if (nextBtn) nextBtn.onclick = () => { page++; render(); };
+}
+
+function fmtNum(n) {
+  if (!n) return '';
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function escapeHtml_(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+}
+
+/* ---------------- BRANCH-WISE STATEMENT ---------------- */
+async function loadBranchView() {
+  currentViewLabel = 'branch';
+  setHeader('Branch-wise Statement', 'Search any branch to see its full transaction history');
+  toolbarFor('branch');
+  showLoading();
+  try {
+    if (branchDirectory.length === 0) {
+      const rows = await fetchSheet('Branch Directory');
+      branchDirectory = rows.slice(1).map(r => ({ office: r[0], name: r[1], mis: r[2], code: r[3] }));
+    }
+    let html = '<div class="branch-picker">' +
+      '<input class="search" id="branchSearch" placeholder="Search branch name or code…" style="width:340px">' +
+      '</div><div class="branch-results" id="branchResults"></div><div id="branchStatementArea"></div>';
+    document.getElementById('content').innerHTML = html;
+    renderBranchResults('');
+    document.getElementById('branchSearch').addEventListener('input', e => renderBranchResults(e.target.value));
+  } catch (err) { showError(err); }
+}
+function renderBranchResults(term) {
+  const t = term.trim().toLowerCase();
+  const matches = branchDirectory.filter(b =>
+    !t || b.name.toLowerCase().includes(t) || b.code.includes(t) || b.office.includes(t) || b.mis.includes(t)
+  ).slice(0, 60);
+  const el = document.getElementById('branchResults');
+  if (matches.length === 0) { el.innerHTML = '<div class="state-msg">No matching branch.</div>'; return; }
+  el.innerHTML = matches.map(b =>
+    '<div class="branch-result" data-code="' + b.code + '" data-name="' + escapeHtml_(b.name) + '">' +
+    '<span>' + escapeHtml_(b.name) + ' <span class="meta">— Office ' + b.office + ', MIS ' + b.mis + '</span></span>' +
+    '<span class="code">' + b.code + '</span></div>'
+  ).join('');
+  el.querySelectorAll('.branch-result').forEach(row => {
+    row.addEventListener('click', () => loadBranchStatement(row.getAttribute('data-code'), row.getAttribute('data-name')));
+  });
+}
+async function loadBranchStatement(code, name) {
+  const area = document.getElementById('branchStatementArea');
+  area.innerHTML = '<div class="state-msg">Loading transactions for ' + escapeHtml_(name) + '…</div>';
+  try {
+    const rows = await fetchSheet('Statement');
+    const header = rows[0];
+    const branchIdx = header.findIndex(h => /^branch$/i.test(h));
+    const debitIdx = header.findIndex(h => /debit/i.test(h));
+    const creditIdx = header.findIndex(h => /credit/i.test(h));
+    const matched = rows.slice(1).filter(r => String(r[branchIdx]).trim() === code);
+    let totalD = 0, totalC = 0;
+    matched.forEach(r => {
+      totalD += parseFloat(String(r[debitIdx]).replace(/,/g, '')) || 0;
+      totalC += parseFloat(String(r[creditIdx]).replace(/,/g, '')) || 0;
+    });
+    const cardsHtml = '<div class="cards">' +
+      card('Transactions', matched.length) +
+      card('Total Credit', fmtMoney(totalC), 'credit') +
+      card('Total Debit', fmtMoney(totalD), 'debit') +
+      '</div><div id="branchTableInner"></div>';
+    area.innerHTML = cardsHtml;
+    currentViewLabel = 'branch_' + code;
+    toolbarFor('branch_selected');
+    onData([header].concat(matched), 1, 'branchTableInner');
+  } catch (err) { area.innerHTML = '<div class="state-msg">Error: ' + escapeHtml_(err.message) + '</div>'; }
+}
+
+/* ---------------- Excel export ---------------- */
+function downloadExcel() {
+  const aoa = currentHeaderRows.concat(filteredRows);
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, currentViewLabel.slice(0, 31));
+  XLSX.writeFile(wb, currentViewLabel + '.xlsx');
+}
+document.getElementById('downloadBtn').addEventListener('click', downloadExcel);
+document.getElementById('searchBox').addEventListener('input', e => applyFilter(e.target.value));
+
+/* ---------------- Nav wiring ---------------- */
+document.querySelector('[data-view="home"]').addEventListener('click', function () { setActiveNav(this); loadHome(); });
+document.querySelector('[data-view="statement"]').addEventListener('click', function () { setActiveNav(this); loadStatement(); });
+document.querySelector('[data-view="reversal"]').addEventListener('click', function () { setActiveNav(this); loadReversal(); });
+document.querySelector('[data-view="branch"]').addEventListener('click', function () { setActiveNav(this); loadBranchView(); });
+
+const officeNav = document.getElementById('officeNav');
+OFFICE_CODES.forEach(code => {
+  const item = document.createElement('div');
+  item.className = 'nav-item';
+  item.textContent = code;
+  item.addEventListener('click', function () { setActiveNav(this); loadOffice(code); });
+  officeNav.appendChild(item);
+});
+
+async function loadStatus() {
+  try {
+    const rows = await fetchSheet('Statement');
+    const header = rows[0];
+    const dateIdx = header.findIndex(h => /^date$/i.test(h));
+    const last = rows.length > 1 ? rows[rows.length - 1][dateIdx] : '—';
+    document.getElementById('lastUpdated').textContent = 'Last entry: ' + (last || '—');
+  } catch (e) {
+    document.getElementById('lastUpdated').textContent = 'Status unavailable';
+  }
+}
+
+loadHome();
+loadStatus();
+</script>
+</body>
+</html>

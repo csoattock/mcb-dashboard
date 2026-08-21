@@ -106,6 +106,8 @@
   td.wrap, th.wrap { white-space: normal; word-break: break-word; }
   tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   tbody tr:hover { background: #f8fafc; }
+  tr.total-row td { font-weight: 700; background: #eef2f6; border-top: 2px solid var(--navy); color: var(--navy); }
+  tr.total-row:hover td { background: #eef2f6; }
   .grid th, .grid td { border-right: 1px solid var(--line); }
   .grid th:last-child, .grid td:last-child { border-right: none; }
   .num { font-family: var(--mono); text-align: right; }
@@ -323,6 +325,44 @@ function fmtMoney(n) {
   return 'Rs ' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/* ---------------- Totals helpers (shared by Statement / Reversal / Branch statement) ---------------- */
+function sumDebitCredit_(header, dataRows) {
+  const debitIdx = header.findIndex(h => /debit/i.test(h));
+  const creditIdx = header.findIndex(h => /credit/i.test(h));
+  let totalDebit = 0, totalCredit = 0;
+  dataRows.forEach(r => {
+    totalDebit += parseFloat(String(r[debitIdx]).replace(/,/g, '')) || 0;
+    totalCredit += parseFloat(String(r[creditIdx]).replace(/,/g, '')) || 0;
+  });
+  return { debitIdx, creditIdx, totalDebit, totalCredit };
+}
+// Appends a 'TOTAL' row (Debit/Credit columns summed) to a [header, ...rows] array,
+// so the total is also baked into what gets exported to Excel/PDF.
+function appendTotalsRow(rows) {
+  if (!rows || rows.length <= 1) return rows;
+  const header = rows[0];
+  const data = rows.slice(1);
+  const { debitIdx, creditIdx, totalDebit, totalCredit } = sumDebitCredit_(header, data);
+  const totalRow = header.map(() => '');
+  totalRow[0] = 'TOTAL';
+  if (debitIdx !== -1) totalRow[debitIdx] = totalDebit.toFixed(2);
+  if (creditIdx !== -1) totalRow[creditIdx] = totalCredit.toFixed(2);
+  return rows.concat([totalRow]);
+}
+// Renders summary cards (Transactions / Total Credit / Total Debit) into containerId,
+// with a nested tableAreaId div for the table itself to render into.
+function renderTotalsCards(rows, containerId, tableAreaId) {
+  const header = rows[0] || [];
+  const data = rows.slice(1);
+  const { totalDebit, totalCredit } = sumDebitCredit_(header, data);
+  const html = '<div class="cards">' +
+    card('Transactions', data.length.toLocaleString()) +
+    card('Total Credit', fmtMoney(totalCredit), 'credit') +
+    card('Total Debit', fmtMoney(totalDebit), 'debit') +
+    '</div><div id="' + tableAreaId + '"></div>';
+  document.getElementById(containerId).innerHTML = html;
+}
+
 /* ---------------- STATEMENT / REVERSAL ---------------- */
 async function loadStatement() {
   currentViewLabel = 'statement';
@@ -331,8 +371,9 @@ async function loadStatement() {
   toolbarFor('statement');
   showLoading();
   try {
-    const rows = await fetchSheet('Statement');
-    onData(filterByMonth_(rows), 1, 'content');
+    const rows = filterByMonth_(await fetchSheet('Statement'));
+    renderTotalsCards(rows, 'content', 'statementTableArea');
+    onData(appendTotalsRow(rows), 1, 'statementTableArea');
   } catch (err) { showError(err); }
 }
 async function loadReversal() {
@@ -342,8 +383,9 @@ async function loadReversal() {
   toolbarFor('reversal');
   showLoading();
   try {
-    const rows = await fetchSheet('Reversal');
-    onData(filterByMonth_(rows), 1, 'content');
+    const rows = filterByMonth_(await fetchSheet('Reversal'));
+    renderTotalsCards(rows, 'content', 'reversalTableArea');
+    onData(appendTotalsRow(rows), 1, 'reversalTableArea');
   } catch (err) { showError(err); }
 }
 function filterByMonth_(rows) {
@@ -399,20 +441,32 @@ async function loadOffice(code) {
     const branchCodes = branches.map(b => b.code);
 
     const headerRows = [
-      ['BRANCH'].concat(branches.map(b => b.name)),
-      ['COM.CODE'].concat(branches.map(b => b.mis)),
-      ['BR.CODE'].concat(branches.map(b => b.code))
+      ['BRANCH', 'ALL BRANCHES'].concat(branches.map(b => b.name)),
+      ['MIS CODE', '—'].concat(branches.map(b => b.mis)),
+      ['BR.CODE', 'TOTAL'].concat(branches.map(b => b.code))
     ];
     let grand = 0;
+    const branchColumnTotals = {};
+    branchCodes.forEach(bc => { branchColumnTotals[bc] = 0; });
+
     const bodyRows = dates.map(d => {
-      const row = [d];
-      branchCodes.forEach(bc => {
+      let rowTotal = 0;
+      const values = branchCodes.map(bc => {
         const v = dateMap[d][bc] || 0;
-        grand += v;
-        row.push(v ? v.toFixed(2) : '');
+        rowTotal += v;
+        branchColumnTotals[bc] += v;
+        return v ? v.toFixed(2) : '';
       });
-      return row;
+      grand += rowTotal;
+      return [d, rowTotal ? rowTotal.toFixed(2) : ''].concat(values);
     });
+    // Bottom TOTAL row: per-branch column sums, with the grand total in the
+    // 'ALL BRANCHES' column so it lines up with the per-row totals above it.
+    bodyRows.push(
+      ['TOTAL', grand ? grand.toFixed(2) : ''].concat(
+        branchCodes.map(bc => branchColumnTotals[bc] ? branchColumnTotals[bc].toFixed(2) : '')
+      )
+    );
 
     const abstractHtml = '<div class="cards">' +
       card('Days Recorded', dates.length) +
@@ -486,7 +540,8 @@ function render() {
   html += '</thead><tbody>';
 
   pageRows.forEach(row => {
-    html += '<tr>';
+    const isTotalRow = row[0] === 'TOTAL';
+    html += '<tr' + (isTotalRow ? ' class="total-row"' : '') + '>';
     row.forEach((cell, i) => {
       const label = String(lastHeaderRow()[i] || '').toLowerCase();
       let cls = isNumericCol(i) ? 'num' : '';
@@ -502,9 +557,11 @@ function render() {
   html += '</tbody></table></div>';
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const hasTotalRow = filteredRows.length > 0 && filteredRows[filteredRows.length - 1][0] === 'TOTAL';
+  const displayCount = filteredRows.length - (hasTotalRow ? 1 : 0);
   html += '<div class="pager">' +
     '<button id="prevBtn" ' + (page === 0 ? 'disabled' : '') + '>Previous</button>' +
-    '<span>Page ' + (page + 1) + ' of ' + totalPages + ' — ' + filteredRows.length + ' row(s)</span>' +
+    '<span>Page ' + (page + 1) + ' of ' + totalPages + ' — ' + displayCount + ' row(s)</span>' +
     '<button id="nextBtn" ' + (page >= totalPages - 1 ? 'disabled' : '') + '>Next</button>' +
     '</div></div>';
 
@@ -583,7 +640,7 @@ async function loadBranchStatement(code, name) {
     currentViewLabel = 'branch_' + code;
     activeReload = () => loadBranchStatement(code, name);
     toolbarFor('branch_selected');
-    onData([header].concat(matched), 1, 'branchTableInner');
+    onData(appendTotalsRow([header].concat(matched)), 1, 'branchTableInner');
   } catch (err) { area.innerHTML = '<div class="state-msg">Error: ' + escapeHtml_(err.message) + '</div>'; }
 }
 

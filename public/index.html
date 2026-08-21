@@ -6,6 +6,8 @@
 <title>IESCO · MCB Collection Dashboard</title>
 <link rel="icon" href="/logo.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
   :root {
     --navy: #0b3556;
@@ -156,6 +158,7 @@
         <div class="topbar-actions" id="topActions">
           <input class="search" id="searchBox" placeholder="Search this view…" style="display:none">
           <button class="btn ghost" id="downloadBtn" style="display:none">⬇ Download Excel</button>
+          <button class="btn ghost" id="downloadPdfBtn" style="display:none">⬇ Download PDF</button>
         </div>
       </div>
       <div class="content" id="content">
@@ -208,9 +211,11 @@ function showError(err) {
 function toolbarFor(view) {
   const search = document.getElementById('searchBox');
   const dl = document.getElementById('downloadBtn');
+  const dlPdf = document.getElementById('downloadPdfBtn');
   const show = view !== 'home' && view !== 'branch';
   search.style.display = show ? '' : 'none';
   dl.style.display = show ? '' : 'none';
+  dlPdf.style.display = show ? '' : 'none';
 }
 
 /* ---------------- HOME ---------------- */
@@ -500,6 +505,57 @@ function downloadExcel() {
   XLSX.writeFile(wb, currentViewLabel + '.xlsx');
 }
 document.getElementById('downloadBtn').addEventListener('click', downloadExcel);
+
+/* ---------------- PDF export ---------------- */
+function loadImageAsDataUrl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+async function downloadPdf() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  const title = document.getElementById('viewTitle').textContent;
+  const sub = document.getElementById('viewSub').textContent;
+
+  let textX = 40;
+  try {
+    const logoDataUrl = await loadImageAsDataUrl('/logo.png');
+    doc.addImage(logoDataUrl, 'PNG', 40, 20, 34, 34);
+    textX = 84;
+  } catch (e) { /* no logo, continue without it */ }
+
+  doc.setFontSize(13);
+  doc.setTextColor(11, 53, 86);
+  doc.text('IESCO · MCB Collection Dashboard', textX, 36);
+  doc.setFontSize(10);
+  doc.setTextColor(100);
+  doc.text(title + ' — ' + sub, textX, 51);
+  doc.setFontSize(8);
+  doc.text('Generated ' + new Date().toLocaleString(), textX, 63);
+
+  doc.autoTable({
+    head: currentHeaderRows,
+    body: filteredRows,
+    startY: 76,
+    styles: { fontSize: 7, cellPadding: 3, overflow: 'linebreak' },
+    headStyles: { fillColor: [11, 53, 86], textColor: 255 },
+    margin: { left: 40, right: 40 },
+    theme: 'grid'
+  });
+
+  doc.save(currentViewLabel + '.pdf');
+}
+document.getElementById('downloadPdfBtn').addEventListener('click', downloadPdf);
+
 document.getElementById('searchBox').addEventListener('input', e => applyFilter(e.target.value));
 
 /* ---------------- Nav wiring ---------------- */

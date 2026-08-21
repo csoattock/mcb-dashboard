@@ -106,7 +106,7 @@
   td.wrap, th.wrap { white-space: normal; word-break: break-word; }
   tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   tbody tr:hover { background: #f8fafc; }
-  tr.total-row td { font-weight: 700; background: #eef2f6; border-top: 2px solid var(--navy); color: var(--navy); }
+  tr.total-row td { font-weight: 800; background: #eef2f6; border-top: 2px solid var(--navy); color: var(--navy); }
   tr.total-row:hover td { background: #eef2f6; }
   .grid th, .grid td { border-right: 1px solid var(--line); }
   .grid th:last-child, .grid td:last-child { border-right: none; }
@@ -441,9 +441,9 @@ async function loadOffice(code) {
     const branchCodes = branches.map(b => b.code);
 
     const headerRows = [
-      ['BRANCH', 'ALL BRANCHES'].concat(branches.map(b => b.name)),
-      ['MIS CODE', '—'].concat(branches.map(b => b.mis)),
-      ['BR.CODE', 'TOTAL'].concat(branches.map(b => b.code))
+      ['BRANCH'].concat(branches.map(b => b.name), ['ALL BRANCHES']),
+      ['MIS CODE'].concat(branches.map(b => b.mis), ['—']),
+      ['BR.CODE'].concat(branches.map(b => b.code), ['TOTAL'])
     ];
     let grand = 0;
     const branchColumnTotals = {};
@@ -458,13 +458,14 @@ async function loadOffice(code) {
         return v ? v.toFixed(2) : '';
       });
       grand += rowTotal;
-      return [d, rowTotal ? rowTotal.toFixed(2) : ''].concat(values);
+      return [d].concat(values, [rowTotal ? rowTotal.toFixed(2) : '']);
     });
     // Bottom TOTAL row: per-branch column sums, with the grand total in the
-    // 'ALL BRANCHES' column so it lines up with the per-row totals above it.
+    // 'ALL BRANCHES' column at the end so it lines up with the per-row totals.
     bodyRows.push(
-      ['TOTAL', grand ? grand.toFixed(2) : ''].concat(
-        branchCodes.map(bc => branchColumnTotals[bc] ? branchColumnTotals[bc].toFixed(2) : '')
+      ['TOTAL'].concat(
+        branchCodes.map(bc => branchColumnTotals[bc] ? branchColumnTotals[bc].toFixed(2) : ''),
+        [grand ? grand.toFixed(2) : '']
       )
     );
 
@@ -509,6 +510,12 @@ function isNumericCol(i) {
 function isWrapCol(i) {
   return /description/i.test(String(lastHeaderRow()[i] || ''));
 }
+function isDateCol(i) {
+  // Office pivot table always has the date as its first column, regardless
+  // of header label (its header rows say 'BRANCH'/'COM.CODE'/'BR.CODE').
+  if (currentHeaderRows.length === 3) return i === 0;
+  return /^date$/i.test(String(lastHeaderRow()[i] || ''));
+}
 function colWidth(i) {
   const label = String(lastHeaderRow()[i] || '').toLowerCase();
   if (isWrapCol(i)) return null;
@@ -549,7 +556,14 @@ function render() {
       if (label === 'credit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' credit';
       if (label === 'debit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' debit';
       const numVal = Number(String(cell).replace(/,/g, ''));
-      const display = isNumericCol(i) && cell !== '' && !isNaN(numVal) ? fmtNum(numVal) : escapeHtml_(cell);
+      let display;
+      if (isDateCol(i) && cell !== '' && cell !== 'TOTAL') {
+        display = escapeHtml_(formatDateDMY_(cell));
+      } else if (isNumericCol(i) && cell !== '' && !isNaN(numVal)) {
+        display = fmtNum(numVal);
+      } else {
+        display = escapeHtml_(cell);
+      }
       html += '<td class="' + cls + '">' + display + '</td>';
     });
     html += '</tr>';

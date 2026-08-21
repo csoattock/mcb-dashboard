@@ -103,8 +103,11 @@
     font-weight: 700; border-bottom: 2px solid var(--line); white-space: nowrap; z-index: 2; font-size: 12px;
     text-transform: uppercase; letter-spacing: .03em;
   }
-  td.wrap, th.wrap { white-space: normal; word-break: break-word; }
-  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.wrap, th.wrap {
+    white-space: normal; word-break: break-word; width: 220px; max-width: 220px;
+    vertical-align: middle; text-align: center;
+  }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: middle; }
   tbody tr:hover { background: #f8fafc; }
   tr.total-row td { font-weight: 800; background: #eef2f6; border-top: 2px solid var(--navy); color: var(--navy); }
   tr.total-row:hover td { background: #eef2f6; }
@@ -371,7 +374,7 @@ async function loadStatement() {
   toolbarFor('statement');
   showLoading();
   try {
-    const rows = filterByMonth_(await fetchSheet('Statement'));
+    const rows = sortByDate_(filterByMonth_(await fetchSheet('Statement')));
     renderTotalsCards(rows, 'content', 'statementTableArea');
     onData(appendTotalsRow(rows), 1, 'statementTableArea');
   } catch (err) { showError(err); }
@@ -383,7 +386,7 @@ async function loadReversal() {
   toolbarFor('reversal');
   showLoading();
   try {
-    const rows = filterByMonth_(await fetchSheet('Reversal'));
+    const rows = sortByDate_(filterByMonth_(await fetchSheet('Reversal')));
     renderTotalsCards(rows, 'content', 'reversalTableArea');
     onData(appendTotalsRow(rows), 1, 'reversalTableArea');
   } catch (err) { showError(err); }
@@ -394,6 +397,17 @@ function filterByMonth_(rows) {
   const monthIdx = header.findIndex(h => /^month$/i.test(h));
   if (monthIdx === -1) return rows;
   return [header].concat(rows.slice(1).filter(r => r[monthIdx] === selectedMonth));
+}
+// Sorts a [header, ...dataRows] array by its Date column, ascending — the
+// underlying Google Sheet isn't always kept in date order, so this is applied
+// wherever a Date column exists rather than trusting the sheet's row order.
+function sortByDate_(rows) {
+  if (!rows || rows.length <= 1) return rows;
+  const header = rows[0];
+  const dateIdx = header.findIndex(h => /^date$/i.test(h));
+  if (dateIdx === -1) return rows;
+  const data = rows.slice(1).slice().sort((a, b) => new Date(a[dateIdx]) - new Date(b[dateIdx]));
+  return [header].concat(data);
 }
 async function ensureBranchDirectory() {
   if (branchDirectory.length === 0) {
@@ -512,7 +526,7 @@ function isWrapCol(i) {
 }
 function isDateCol(i) {
   // Office pivot table always has the date as its first column, regardless
-  // of header label (its header rows say 'BRANCH'/'COM.CODE'/'BR.CODE').
+  // of header label (its header rows say 'BRANCH'/'MIS CODE'/'BR.CODE').
   if (currentHeaderRows.length === 3) return i === 0;
   return /^date$/i.test(String(lastHeaderRow()[i] || ''));
 }
@@ -654,7 +668,7 @@ async function loadBranchStatement(code, name) {
     currentViewLabel = 'branch_' + code;
     activeReload = () => loadBranchStatement(code, name);
     toolbarFor('branch_selected');
-    onData(appendTotalsRow([header].concat(matched)), 1, 'branchTableInner');
+    onData(appendTotalsRow(sortByDate_([header].concat(matched))), 1, 'branchTableInner');
   } catch (err) { area.innerHTML = '<div class="state-msg">Error: ' + escapeHtml_(err.message) + '</div>'; }
 }
 

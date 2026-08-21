@@ -675,6 +675,13 @@ const BANK_INFO = {
   iban: 'PK86MUCB0102801010014543'
 };
 
+function formatDateDMY_(val) {
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return String(val);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dd = String(d.getDate()).padStart(2, '0');
+  return dd + '-' + months[d.getMonth()] + '-' + d.getFullYear();
+}
 function computeDateRange() {
   const isOfficeView = currentHeaderRows.length === 3;
   let dateIdx = 0;
@@ -682,10 +689,13 @@ function computeDateRange() {
     dateIdx = lastHeaderRow().findIndex(h => /^date$/i.test(h));
     if (dateIdx === -1) dateIdx = 0;
   }
-  const dates = filteredRows.map(r => r[dateIdx]).filter(Boolean);
+  // Exclude the appended TOTAL row — its first cell is the literal text
+  // 'TOTAL', not a date, so it must never be sorted in with the real dates.
+  const dataRows = filteredRows.filter(r => r[0] !== 'TOTAL');
+  const dates = dataRows.map(r => r[dateIdx]).filter(Boolean);
   if (dates.length === 0) return { from: '—', to: '—' };
   const sorted = dates.slice().sort((a, b) => new Date(a) - new Date(b));
-  return { from: sorted[0], to: sorted[sorted.length - 1] };
+  return { from: formatDateDMY_(sorted[0]), to: formatDateDMY_(sorted[sorted.length - 1]) };
 }
 
 async function downloadPdf() {

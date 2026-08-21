@@ -35,6 +35,12 @@
     width: 240px; flex: none; background: linear-gradient(180deg, var(--navy), var(--navy-deep));
     color: #dce7f0; display: flex; flex-direction: column;
   }
+  .menu-toggle {
+    display: none; align-items: center; justify-content: center; width: 34px; height: 34px;
+    border: 1px solid var(--line); background: var(--panel); border-radius: 7px; cursor: pointer;
+    font-size: 18px; color: var(--navy); flex: none;
+  }
+  .sidebar-overlay { display: none; }
   .side-brand { display: flex; align-items: center; gap: 10px; padding: 20px 18px 16px; border-bottom: 1px solid rgba(255,255,255,0.12); }
   .side-brand img { width: 38px; height: 38px; border-radius: 50%; background: #fff; padding: 2px; }
   .side-brand .t1 { font-size: 13px; font-weight: 700; letter-spacing: .02em; line-height: 1.25; }
@@ -85,8 +91,13 @@
 
   /* ---------- Table ---------- */
   .table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  table.wrap-table { table-layout: fixed; }
+  /* table-layout:fixed forced columns to squeeze to fit the screen instead of
+     letting the table overflow, which is what blocked horizontal scrolling.
+     Auto layout + white-space:nowrap lets the table grow to its natural width
+     and .table-scroll (above) scrolls it. */
+  table.wrap-table {}
   thead th {
     position: sticky; background: #eef2f6; color: var(--navy); text-align: left; padding: 9px 10px;
     font-weight: 700; border-bottom: 2px solid var(--line); white-space: nowrap; z-index: 2; font-size: 12px;
@@ -118,13 +129,24 @@
   .branch-result .meta { color: var(--muted); font-size: 12px; }
 
   @media (max-width: 800px) {
-    .side { display: none; }
+    .menu-toggle { display: inline-flex; }
+    .side {
+      position: fixed; top: 0; left: 0; height: 100vh; z-index: 1001;
+      transform: translateX(-100%); transition: transform .22s ease;
+      box-shadow: 6px 0 24px rgba(0,0,0,0.25);
+    }
+    .side.open { transform: translateX(0); }
+    .sidebar-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(6,20,32,0.45); z-index: 1000;
+    }
+    .sidebar-overlay.show { display: block; }
     .search { width: 160px; }
   }
 </style>
 </head>
 <body>
   <div class="app">
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
     <nav class="side">
       <div class="side-brand">
         <img src="/logo.png" alt="IESCO logo">
@@ -151,9 +173,12 @@
 
     <main class="main">
       <div class="topbar">
-        <div>
-          <h1 id="viewTitle">Home</h1>
-          <div class="sub" id="viewSub">Overview and quick access</div>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">☰</button>
+          <div>
+            <h1 id="viewTitle">Home</h1>
+            <div class="sub" id="viewSub">Overview and quick access</div>
+          </div>
         </div>
         <div class="topbar-actions" id="topActions">
           <select class="search" id="monthSelect" style="width:150px;">
@@ -446,7 +471,7 @@ function render() {
   const start = page * PAGE_SIZE;
   const pageRows = filteredRows.slice(start, start + PAGE_SIZE);
 
-  let html = '<div class="table-wrap"><table class="' + (isOfficeView ? 'grid' : 'wrap-table') + '"><thead>';
+  let html = '<div class="table-wrap"><div class="table-scroll"><table class="' + (isOfficeView ? 'grid' : 'wrap-table') + '"><thead>';
   currentHeaderRows.forEach((hRow, ri) => {
     html += '<tr>';
     hRow.forEach((h, i) => {
@@ -474,7 +499,7 @@ function render() {
     });
     html += '</tr>';
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
   html += '<div class="pager">' +
@@ -692,6 +717,22 @@ async function downloadPdf() {
 document.getElementById('downloadPdfBtn').addEventListener('click', downloadPdf);
 
 document.getElementById('searchBox').addEventListener('input', e => applyFilter(e.target.value));
+
+/* ---------------- Mobile sidebar drawer ---------------- */
+const sideNav = document.querySelector('.side');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
+const menuToggle = document.getElementById('menuToggle');
+function openSidebar() { sideNav.classList.add('open'); sidebarOverlay.classList.add('show'); }
+function closeSidebar() { sideNav.classList.remove('open'); sidebarOverlay.classList.remove('show'); }
+menuToggle.addEventListener('click', () => {
+  sideNav.classList.contains('open') ? closeSidebar() : openSidebar();
+});
+sidebarOverlay.addEventListener('click', closeSidebar);
+// Close the drawer after picking a nav item on mobile (delegated so it also
+// covers the office items, which are added dynamically further below).
+sideNav.addEventListener('click', e => {
+  if (e.target.closest('.nav-item') && window.innerWidth <= 800) closeSidebar();
+});
 
 /* ---------------- Nav wiring ---------------- */
 document.querySelector('[data-view="home"]').addEventListener('click', function () { setActiveNav(this); loadHome(); });

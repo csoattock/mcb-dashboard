@@ -6,6 +6,8 @@
 <title>IESCO · MCB Collection Dashboard</title>
 <link rel="icon" href="/logo.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
   :root {
     --navy: #0b3556;
@@ -33,6 +35,12 @@
     width: 240px; flex: none; background: linear-gradient(180deg, var(--navy), var(--navy-deep));
     color: #dce7f0; display: flex; flex-direction: column;
   }
+  .menu-toggle {
+    display: none; align-items: center; justify-content: center; width: 34px; height: 34px;
+    border: 1px solid var(--line); background: var(--panel); border-radius: 7px; cursor: pointer;
+    font-size: 18px; color: var(--navy); flex: none;
+  }
+  .sidebar-overlay { display: none; }
   .side-brand { display: flex; align-items: center; gap: 10px; padding: 20px 18px 16px; border-bottom: 1px solid rgba(255,255,255,0.12); }
   .side-brand img { width: 38px; height: 38px; border-radius: 50%; background: #fff; padding: 2px; }
   .side-brand .t1 { font-size: 13px; font-weight: 700; letter-spacing: .02em; line-height: 1.25; }
@@ -83,16 +91,26 @@
 
   /* ---------- Table ---------- */
   .table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  table.wrap-table { table-layout: fixed; }
+  /* table-layout:fixed forced columns to squeeze to fit the screen instead of
+     letting the table overflow, which is what blocked horizontal scrolling.
+     Auto layout + white-space:nowrap lets the table grow to its natural width
+     and .table-scroll (above) scrolls it. */
+  table.wrap-table {}
   thead th {
     position: sticky; background: #eef2f6; color: var(--navy); text-align: left; padding: 9px 10px;
     font-weight: 700; border-bottom: 2px solid var(--line); white-space: nowrap; z-index: 2; font-size: 12px;
     text-transform: uppercase; letter-spacing: .03em;
   }
-  td.wrap, th.wrap { white-space: normal; word-break: break-word; }
-  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.wrap, th.wrap {
+    white-space: normal; word-break: break-word; width: 220px; max-width: 220px;
+    vertical-align: middle; text-align: center;
+  }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: middle; }
   tbody tr:hover { background: #f8fafc; }
+  tr.total-row td { font-weight: 800; background: #eef2f6; border-top: 2px solid var(--navy); color: var(--navy); }
+  tr.total-row:hover td { background: #eef2f6; }
   .grid th, .grid td { border-right: 1px solid var(--line); }
   .grid th:last-child, .grid td:last-child { border-right: none; }
   .num { font-family: var(--mono); text-align: right; }
@@ -116,7 +134,17 @@
   .branch-result .meta { color: var(--muted); font-size: 12px; }
 
   @media (max-width: 800px) {
-    .side { display: none; }
+    .menu-toggle { display: inline-flex; }
+    .side {
+      position: fixed; top: 0; left: 0; height: 100vh; z-index: 1001;
+      transform: translateX(-100%); transition: transform .22s ease;
+      box-shadow: 6px 0 24px rgba(0,0,0,0.25);
+    }
+    .side.open { transform: translateX(0); }
+    .sidebar-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(6,20,32,0.45); z-index: 1000;
+    }
+    .sidebar-overlay.show { display: block; }
     .search { width: 160px; }
   }
 
@@ -168,6 +196,7 @@
   </div>
 
   <div class="app" id="appRoot" style="display:none;">
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
     <nav class="side">
       <div class="side-brand">
         <img src="/logo.png" alt="IESCO logo">
@@ -194,13 +223,20 @@
 
     <main class="main">
       <div class="topbar">
-        <div>
-          <h1 id="viewTitle">Home</h1>
-          <div class="sub" id="viewSub">Overview and quick access</div>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <button class="menu-toggle" id="menuToggle" aria-label="Toggle menu">☰</button>
+          <div>
+            <h1 id="viewTitle">Home</h1>
+            <div class="sub" id="viewSub">Overview and quick access</div>
+          </div>
         </div>
         <div class="topbar-actions" id="topActions">
+          <select class="search" id="monthSelect" style="width:150px;">
+            <option value="All">All Months</option>
+          </select>
           <input class="search" id="searchBox" placeholder="Search this view…" style="display:none">
           <button class="btn ghost" id="downloadBtn" style="display:none">⬇ Download Excel</button>
+          <button class="btn ghost" id="downloadPdfBtn" style="display:none">⬇ Download PDF</button>
           <button class="btn ghost logout-btn" id="logoutBtn">Log Out</button>
         </div>
       </div>
@@ -226,6 +262,8 @@ let filteredRows = [];
 let currentViewLabel = 'home';
 let page = 0;
 let renderTargetId = 'content';
+let selectedMonth = 'All';
+let activeReload = () => loadHome();
 
 /* ---------------- AUTH ---------------- */
 const ACCOUNTS = [
@@ -253,6 +291,7 @@ function doLogin(username, password) {
   document.getElementById('loginWrap').style.display = 'none';
   document.getElementById('appRoot').style.display = '';
   applyRoleRestrictions();
+  ensureMonthOptions();
   loadHome();
   loadStatus();
   return true;
@@ -279,6 +318,23 @@ document.getElementById('logoutBtn').addEventListener('click', function () {
   document.getElementById('loginUser').value = '';
   document.getElementById('loginPass').value = '';
   document.getElementById('loginError').textContent = '';
+});
+
+async function ensureMonthOptions() {
+  const sel = document.getElementById('monthSelect');
+  if (sel.dataset.loaded) return;
+  const rows = await fetchSheet('Statement');
+  const header = rows[0];
+  const monthIdx = header.findIndex(h => /^month$/i.test(h));
+  const months = Array.from(new Set(rows.slice(1).map(r => r[monthIdx]).filter(Boolean)));
+  months.sort((a, b) => new Date('1 ' + b) - new Date('1 ' + a)); // most recent first
+  sel.innerHTML = '<option value="All">All Months</option>' +
+    months.map(m => '<option value="' + escapeHtml_(m) + '">' + escapeHtml_(m) + '</option>').join('');
+  sel.dataset.loaded = '1';
+}
+document.getElementById('monthSelect').addEventListener('change', e => {
+  selectedMonth = e.target.value;
+  activeReload();
 });
 
 async function fetchSheet(name) {
@@ -308,21 +364,25 @@ function showError(err) {
 function toolbarFor(view) {
   const search = document.getElementById('searchBox');
   const dl = document.getElementById('downloadBtn');
+  const dlPdf = document.getElementById('downloadPdfBtn');
   const show = view !== 'home' && view !== 'branch';
   search.style.display = show ? '' : 'none';
-  dl.style.display = (show && currentRole !== 'user') ? '' : 'none';
+  dl.style.display = show ? '' : 'none';
+  dlPdf.style.display = (show && currentRole !== 'user') ? '' : 'none';
 }
 
 /* ---------------- HOME ---------------- */
 async function loadHome() {
   currentViewLabel = 'home';
-  setHeader('Home', 'Overview and quick access');
+  activeReload = loadHome;
+  setHeader('Home', selectedMonth === 'All' ? 'Overview and quick access' : 'Overview — ' + selectedMonth);
   toolbarFor('home');
   showLoading();
   try {
     const rows = await fetchSheet('Statement');
     const header = rows[0];
-    const data = rows.slice(1);
+    const monthIdx = header.findIndex(h => /^month$/i.test(h));
+    const data = rows.slice(1).filter(r => selectedMonth === 'All' || r[monthIdx] === selectedMonth);
     const debitIdx = header.findIndex(h => /debit/i.test(h));
     const creditIdx = header.findIndex(h => /credit/i.test(h));
     const dateIdx = header.findIndex(h => /^date$/i.test(h));
@@ -369,65 +429,170 @@ function fmtMoney(n) {
   return 'Rs ' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/* ---------------- Totals helpers (shared by Statement / Reversal / Branch statement) ---------------- */
+function sumDebitCredit_(header, dataRows) {
+  const debitIdx = header.findIndex(h => /debit/i.test(h));
+  const creditIdx = header.findIndex(h => /credit/i.test(h));
+  let totalDebit = 0, totalCredit = 0;
+  dataRows.forEach(r => {
+    totalDebit += parseFloat(String(r[debitIdx]).replace(/,/g, '')) || 0;
+    totalCredit += parseFloat(String(r[creditIdx]).replace(/,/g, '')) || 0;
+  });
+  return { debitIdx, creditIdx, totalDebit, totalCredit };
+}
+// Appends a 'TOTAL' row (Debit/Credit columns summed) to a [header, ...rows] array,
+// so the total is also baked into what gets exported to Excel/PDF.
+function appendTotalsRow(rows) {
+  if (!rows || rows.length <= 1) return rows;
+  const header = rows[0];
+  const data = rows.slice(1);
+  const { debitIdx, creditIdx, totalDebit, totalCredit } = sumDebitCredit_(header, data);
+  const totalRow = header.map(() => '');
+  totalRow[0] = 'TOTAL';
+  if (debitIdx !== -1) totalRow[debitIdx] = totalDebit.toFixed(2);
+  if (creditIdx !== -1) totalRow[creditIdx] = totalCredit.toFixed(2);
+  return rows.concat([totalRow]);
+}
+// Renders summary cards (Transactions / Total Credit / Total Debit) into containerId,
+// with a nested tableAreaId div for the table itself to render into.
+function renderTotalsCards(rows, containerId, tableAreaId) {
+  const header = rows[0] || [];
+  const data = rows.slice(1);
+  const { totalDebit, totalCredit } = sumDebitCredit_(header, data);
+  const html = '<div class="cards">' +
+    card('Transactions', data.length.toLocaleString()) +
+    card('Total Credit', fmtMoney(totalCredit), 'credit') +
+    card('Total Debit', fmtMoney(totalDebit), 'debit') +
+    '</div><div id="' + tableAreaId + '"></div>';
+  document.getElementById(containerId).innerHTML = html;
+}
+
 /* ---------------- STATEMENT / REVERSAL ---------------- */
 async function loadStatement() {
   currentViewLabel = 'statement';
-  setHeader('Statement', 'Full transaction ledger');
+  activeReload = loadStatement;
+  setHeader('Statement', selectedMonth === 'All' ? 'Full transaction ledger' : 'Full transaction ledger — ' + selectedMonth);
   toolbarFor('statement');
   showLoading();
   try {
-    const rows = await fetchSheet('Statement');
-    onData(rows, 1, 'content');
+    const rows = sortByDate_(filterByMonth_(await fetchSheet('Statement')));
+    renderTotalsCards(rows, 'content', 'statementTableArea');
+    onData(appendTotalsRow(rows), 1, 'statementTableArea');
   } catch (err) { showError(err); }
 }
 async function loadReversal() {
   currentViewLabel = 'reversal';
-  setHeader('Reversal', 'Transactions logged as reversals');
+  activeReload = loadReversal;
+  setHeader('Reversal', selectedMonth === 'All' ? 'Transactions logged as reversals' : 'Reversals — ' + selectedMonth);
   toolbarFor('reversal');
   showLoading();
   try {
-    const rows = await fetchSheet('Reversal');
-    onData(rows, 1, 'content');
+    const rows = sortByDate_(filterByMonth_(await fetchSheet('Reversal')));
+    renderTotalsCards(rows, 'content', 'reversalTableArea');
+    onData(appendTotalsRow(rows), 1, 'reversalTableArea');
   } catch (err) { showError(err); }
 }
+function filterByMonth_(rows) {
+  if (selectedMonth === 'All' || rows.length === 0) return rows;
+  const header = rows[0];
+  const monthIdx = header.findIndex(h => /^month$/i.test(h));
+  if (monthIdx === -1) return rows;
+  return [header].concat(rows.slice(1).filter(r => r[monthIdx] === selectedMonth));
+}
+// Sorts a [header, ...dataRows] array by its Date column, ascending — the
+// underlying Google Sheet isn't always kept in date order, so this is applied
+// wherever a Date column exists rather than trusting the sheet's row order.
+function sortByDate_(rows) {
+  if (!rows || rows.length <= 1) return rows;
+  const header = rows[0];
+  const dateIdx = header.findIndex(h => /^date$/i.test(h));
+  if (dateIdx === -1) return rows;
+  const data = rows.slice(1).slice().sort((a, b) => new Date(a[dateIdx]) - new Date(b[dateIdx]));
+  return [header].concat(data);
+}
+async function ensureBranchDirectory() {
+  if (branchDirectory.length === 0) {
+    const rows = await fetchSheet('Branch Directory');
+    branchDirectory = rows.slice(1).map(r => ({ office: r[0], name: r[1], mis: r[2], code: r[3] }));
+  }
+  return branchDirectory;
+}
+
 async function loadOffice(code) {
   currentViewLabel = 'office_' + code;
-  setHeader('Office ' + code, 'Daily collection summary');
+  activeReload = () => loadOffice(code);
+  setHeader('Office ' + code, 'Daily collection summary' + (selectedMonth !== 'All' ? ' — ' + selectedMonth : ''));
   toolbarFor('office');
   showLoading();
   try {
-    const rows = await fetchSheet(code);
-    padBranchCodeRow(rows);
-    renderOfficeAbstract(rows);
-    onData(rows, 3, 'officeTableArea');
-  } catch (err) { showError(err); }
-}
-function padBranchCodeRow(rows) {
-  if (rows.length > 2) {
-    rows[2] = rows[2].map(cell => /^\d+$/.test(String(cell).trim()) ? String(cell).padStart(4, '0') : cell);
-  }
-}
-function renderOfficeAbstract(rows) {
-  if (rows.length < 4) return;
-  const names = rows[0], data = rows.slice(3).filter(r => r.length && r[0]);
-  let grandTotal = 0;
-  const perCol = names.map((_, i) => 0);
-  data.forEach(r => {
-    for (let i = 1; i < r.length; i++) {
-      const v = parseFloat(String(r[i]).replace(/,/g, '')) || 0;
-      perCol[i] += v;
-      if (!/total/i.test(names[i] || '')) grandTotal += 0; // grand total computed from TOTAL col if present, else summed below
+    await ensureBranchDirectory();
+    const branches = branchDirectory.filter(b => b.office === code).sort((a, b) => a.code.localeCompare(b.code));
+    if (branches.length === 0) {
+      document.getElementById('content').innerHTML = '<div class="state-msg">No branches found for office ' + code + ' in Branch Directory. Try re-running buildBranchDirectory() in Apps Script.</div>';
+      return;
     }
-  });
-  const totalColIdx = names.findIndex(n => /total/i.test(n || ''));
-  const grand = totalColIdx > -1 ? perCol[totalColIdx] : perCol.slice(1).reduce((a, b) => a + b, 0);
 
-  const abstractHtml = '<div class="cards">' +
-    card('Days Recorded', data.length) +
-    card('Branches', names.length - 1 - (totalColIdx > -1 ? 1 : 0)) +
-    card('Grand Total Collected', fmtMoney(grand), 'credit') +
-    '</div>';
-  document.getElementById('content').innerHTML = abstractHtml + '<div id="officeTableArea"></div>';
+    const stRows = await fetchSheet('Statement');
+    const header = stRows[0];
+    const dateIdx = header.findIndex(h => /^date$/i.test(h));
+    const monthIdx = header.findIndex(h => /^month$/i.test(h));
+    const branchIdx = header.findIndex(h => /^branch$/i.test(h));
+    const creditIdx = header.findIndex(h => /credit/i.test(h));
+
+    const branchCodeSet = new Set(branches.map(b => b.code));
+    let data = stRows.slice(1).filter(r => branchCodeSet.has(String(r[branchIdx]).trim()));
+    if (selectedMonth !== 'All') data = data.filter(r => r[monthIdx] === selectedMonth);
+
+    // Pivot: date -> branchCode -> summed credit for that day.
+    const dateMap = {};
+    data.forEach(r => {
+      const d = r[dateIdx];
+      const b = String(r[branchIdx]).trim();
+      const c = parseFloat(String(r[creditIdx]).replace(/,/g, '')) || 0;
+      if (!dateMap[d]) dateMap[d] = {};
+      dateMap[d][b] = (dateMap[d][b] || 0) + c;
+    });
+    const dates = Object.keys(dateMap).sort((a, b) => new Date(a) - new Date(b));
+    const branchCodes = branches.map(b => b.code);
+
+    const headerRows = [
+      ['BRANCH'].concat(branches.map(b => b.name), ['ALL BRANCHES']),
+      ['MIS CODE'].concat(branches.map(b => b.mis), ['—']),
+      ['BR.CODE'].concat(branches.map(b => b.code), ['TOTAL'])
+    ];
+    let grand = 0;
+    const branchColumnTotals = {};
+    branchCodes.forEach(bc => { branchColumnTotals[bc] = 0; });
+
+    const bodyRows = dates.map(d => {
+      let rowTotal = 0;
+      const values = branchCodes.map(bc => {
+        const v = dateMap[d][bc] || 0;
+        rowTotal += v;
+        branchColumnTotals[bc] += v;
+        return v ? v.toFixed(2) : '';
+      });
+      grand += rowTotal;
+      return [d].concat(values, [rowTotal ? rowTotal.toFixed(2) : '']);
+    });
+    // Bottom TOTAL row: per-branch column sums, with the grand total in the
+    // 'ALL BRANCHES' column at the end so it lines up with the per-row totals.
+    bodyRows.push(
+      ['TOTAL'].concat(
+        branchCodes.map(bc => branchColumnTotals[bc] ? branchColumnTotals[bc].toFixed(2) : ''),
+        [grand ? grand.toFixed(2) : '']
+      )
+    );
+
+    const abstractHtml = '<div class="cards">' +
+      card('Days Recorded', dates.length) +
+      card('Branches', branches.length) +
+      card('Grand Total Collected', fmtMoney(grand), 'credit') +
+      '</div>';
+    document.getElementById('content').innerHTML = abstractHtml + '<div id="officeTableArea"></div>';
+    onData(headerRows.concat(bodyRows), 3, 'officeTableArea');
+  } catch (err) { showError(err); }
+
 }
 
 function onData(rows, headerRowCount, targetId) {
@@ -460,6 +625,12 @@ function isNumericCol(i) {
 function isWrapCol(i) {
   return /description/i.test(String(lastHeaderRow()[i] || ''));
 }
+function isDateCol(i) {
+  // Office pivot table always has the date as its first column, regardless
+  // of header label (its header rows say 'BRANCH'/'MIS CODE'/'BR.CODE').
+  if (currentHeaderRows.length === 3) return i === 0;
+  return /^date$/i.test(String(lastHeaderRow()[i] || ''));
+}
 function colWidth(i) {
   const label = String(lastHeaderRow()[i] || '').toLowerCase();
   if (isWrapCol(i)) return null;
@@ -476,7 +647,7 @@ function render() {
   const start = page * PAGE_SIZE;
   const pageRows = filteredRows.slice(start, start + PAGE_SIZE);
 
-  let html = '<div class="table-wrap"><table class="' + (isOfficeView ? 'grid' : 'wrap-table') + '"><thead>';
+  let html = '<div class="table-wrap"><div class="table-scroll"><table class="' + (isOfficeView ? 'grid' : 'wrap-table') + '"><thead>';
   currentHeaderRows.forEach((hRow, ri) => {
     html += '<tr>';
     hRow.forEach((h, i) => {
@@ -491,7 +662,8 @@ function render() {
   html += '</thead><tbody>';
 
   pageRows.forEach(row => {
-    html += '<tr>';
+    const isTotalRow = row[0] === 'TOTAL';
+    html += '<tr' + (isTotalRow ? ' class="total-row"' : '') + '>';
     row.forEach((cell, i) => {
       const label = String(lastHeaderRow()[i] || '').toLowerCase();
       let cls = isNumericCol(i) ? 'num' : '';
@@ -499,17 +671,26 @@ function render() {
       if (label === 'credit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' credit';
       if (label === 'debit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' debit';
       const numVal = Number(String(cell).replace(/,/g, ''));
-      const display = isNumericCol(i) && cell !== '' && !isNaN(numVal) ? fmtNum(numVal) : escapeHtml_(cell);
+      let display;
+      if (isDateCol(i) && cell !== '' && cell !== 'TOTAL') {
+        display = escapeHtml_(formatDateDMY_(cell));
+      } else if (isNumericCol(i) && cell !== '' && !isNaN(numVal)) {
+        display = fmtNum(numVal);
+      } else {
+        display = escapeHtml_(cell);
+      }
       html += '<td class="' + cls + '">' + display + '</td>';
     });
     html += '</tr>';
   });
-  html += '</tbody></table>';
+  html += '</tbody></table></div>';
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const hasTotalRow = filteredRows.length > 0 && filteredRows[filteredRows.length - 1][0] === 'TOTAL';
+  const displayCount = filteredRows.length - (hasTotalRow ? 1 : 0);
   html += '<div class="pager">' +
     '<button id="prevBtn" ' + (page === 0 ? 'disabled' : '') + '>Previous</button>' +
-    '<span>Page ' + (page + 1) + ' of ' + totalPages + ' — ' + filteredRows.length + ' row(s)</span>' +
+    '<span>Page ' + (page + 1) + ' of ' + totalPages + ' — ' + displayCount + ' row(s)</span>' +
     '<button id="nextBtn" ' + (page >= totalPages - 1 ? 'disabled' : '') + '>Next</button>' +
     '</div></div>';
 
@@ -533,14 +714,12 @@ function escapeHtml_(s) {
 async function loadBranchView() {
   if (currentRole === 'user') { loadHome(); return; }
   currentViewLabel = 'branch';
+  activeReload = loadBranchView;
   setHeader('Branch-wise Statement', 'Search any branch to see its full transaction history');
   toolbarFor('branch');
   showLoading();
   try {
-    if (branchDirectory.length === 0) {
-      const rows = await fetchSheet('Branch Directory');
-      branchDirectory = rows.slice(1).map(r => ({ office: r[0], name: r[1], mis: r[2], code: r[3] }));
-    }
+    await ensureBranchDirectory();
     let html = '<div class="branch-picker">' +
       '<input class="search" id="branchSearch" placeholder="Search branch name or code…" style="width:340px">' +
       '</div><div class="branch-results" id="branchResults"></div><div id="branchStatementArea"></div>';
@@ -574,7 +753,9 @@ async function loadBranchStatement(code, name) {
     const branchIdx = header.findIndex(h => /^branch$/i.test(h));
     const debitIdx = header.findIndex(h => /debit/i.test(h));
     const creditIdx = header.findIndex(h => /credit/i.test(h));
-    const matched = rows.slice(1).filter(r => String(r[branchIdx]).trim() === code);
+    const monthIdx = header.findIndex(h => /^month$/i.test(h));
+    let matched = rows.slice(1).filter(r => String(r[branchIdx]).trim() === code);
+    if (selectedMonth !== 'All') matched = matched.filter(r => r[monthIdx] === selectedMonth);
     let totalD = 0, totalC = 0;
     matched.forEach(r => {
       totalD += parseFloat(String(r[debitIdx]).replace(/,/g, '')) || 0;
@@ -587,14 +768,14 @@ async function loadBranchStatement(code, name) {
       '</div><div id="branchTableInner"></div>';
     area.innerHTML = cardsHtml;
     currentViewLabel = 'branch_' + code;
+    activeReload = () => loadBranchStatement(code, name);
     toolbarFor('branch_selected');
-    onData([header].concat(matched), 1, 'branchTableInner');
+    onData(appendTotalsRow(sortByDate_([header].concat(matched))), 1, 'branchTableInner');
   } catch (err) { area.innerHTML = '<div class="state-msg">Error: ' + escapeHtml_(err.message) + '</div>'; }
 }
 
 /* ---------------- Excel export ---------------- */
 function downloadExcel() {
-  if (currentRole === 'user') return;
   const aoa = currentHeaderRows.concat(filteredRows);
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   const wb = XLSX.utils.book_new();
@@ -602,7 +783,154 @@ function downloadExcel() {
   XLSX.writeFile(wb, currentViewLabel + '.xlsx');
 }
 document.getElementById('downloadBtn').addEventListener('click', downloadExcel);
+
+/* ---------------- PDF export ---------------- */
+function loadImageAsDataUrl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+const BANK_INFO = {
+  entity: 'ISLAMABAD ELECTRIC SUPPLY CO',
+  branchLabel: '1028-ISLAMABAD SUPER MARKET',
+  accountNo: '0102801010014543',
+  iban: 'PK86MUCB0102801010014543'
+};
+
+function formatDateDMY_(val) {
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return String(val);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dd = String(d.getDate()).padStart(2, '0');
+  return dd + '-' + months[d.getMonth()] + '-' + d.getFullYear();
+}
+function computeDateRange() {
+  const isOfficeView = currentHeaderRows.length === 3;
+  let dateIdx = 0;
+  if (!isOfficeView) {
+    dateIdx = lastHeaderRow().findIndex(h => /^date$/i.test(h));
+    if (dateIdx === -1) dateIdx = 0;
+  }
+  // Exclude the appended TOTAL row — its first cell is the literal text
+  // 'TOTAL', not a date, so it must never be sorted in with the real dates.
+  const dataRows = filteredRows.filter(r => r[0] !== 'TOTAL');
+  const dates = dataRows.map(r => r[dateIdx]).filter(Boolean);
+  if (dates.length === 0) return { from: '—', to: '—' };
+  const sorted = dates.slice().sort((a, b) => new Date(a) - new Date(b));
+  return { from: formatDateDMY_(sorted[0]), to: formatDateDMY_(sorted[sorted.length - 1]) };
+}
+
+async function downloadPdf() {
+  if (currentRole === 'user') return;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const rightColX = pageWidth / 2 + 20;
+  let leftTextX = 40;
+
+  // MCB logo — not uploaded yet. Once you send it, I just need to add it
+  // as public/mcb-logo.png in the repo; this code already looks for it and
+  // will pick it up automatically, no further code changes needed.
+  try {
+    const logoDataUrl = await loadImageAsDataUrl('/mcb-logo.png');
+    doc.addImage(logoDataUrl, 'PNG', 40, 24, 34, 34);
+    leftTextX = 84;
+  } catch (e) { /* logo not available — continue with text-only header */ }
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(16);
+  doc.setTextColor(139, 26, 43); // MCB maroon
+  doc.text('MCB Bank Limited', leftTextX, 40);
+
+  doc.setFontSize(11);
+  doc.setTextColor(20, 20, 20);
+  doc.setFont(undefined, 'bold');
+  doc.text(BANK_INFO.entity, 40, 66);
+  doc.setFont(undefined, 'normal');
+  doc.text('Branch: ' + BANK_INFO.branchLabel, 40, 82);
+
+  let leftY = 106;
+  const isBranchView = currentViewLabel.startsWith('branch_');
+  if (isBranchView) {
+    const code = currentViewLabel.replace('branch_', '');
+    const b = branchDirectory.find(x => x.code === code);
+    doc.setFont(undefined, 'bold');
+    doc.text('Filtered Branch: ' + code + (b ? ' - ' + b.name : ''), 40, leftY);
+    leftY += 16;
+  }
+  doc.setFont(undefined, 'bold');
+  doc.text('Month: ' + (selectedMonth === 'All' ? 'All Months' : selectedMonth), 40, leftY);
+
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(16);
+  doc.setTextColor(20, 20, 20);
+  doc.text('Account Statement', rightColX, 40);
+
+  const range = computeDateRange();
+  const sourceLabel = currentViewLabel.startsWith('branch_')
+    ? 'Filtered from consolidated MCB e-statement'
+    : currentViewLabel.startsWith('office_')
+      ? 'Derived from Statement + Branch Directory'
+      : 'Consolidated MCB e-statement';
+  const rightLines = [
+    ['Account No:', BANK_INFO.accountNo],
+    ['IBAN:', BANK_INFO.iban],
+    ['Statement Period:', range.from + ' to ' + range.to],
+    ['Statement Generated:', new Date().toLocaleString()],
+    ['Source:', sourceLabel]
+  ];
+  doc.setFontSize(9.5);
+  let ry = 62;
+  rightLines.forEach(([label, value]) => {
+    doc.setFont(undefined, 'bold');
+    doc.text(label, rightColX, ry);
+    doc.setFont(undefined, 'normal');
+    doc.text(String(value), rightColX + 112, ry);
+    ry += 15;
+  });
+
+  doc.setDrawColor(200);
+  doc.line(40, 132, pageWidth - 40, 132);
+
+  doc.autoTable({
+    head: currentHeaderRows,
+    body: filteredRows,
+    startY: 144,
+    styles: { fontSize: 7, cellPadding: 3, overflow: 'linebreak' },
+    headStyles: { fillColor: [11, 53, 86], textColor: 255 },
+    margin: { left: 40, right: 40 },
+    theme: 'grid'
+  });
+
+  doc.save(currentViewLabel + '.pdf');
+}
+document.getElementById('downloadPdfBtn').addEventListener('click', downloadPdf);
+
 document.getElementById('searchBox').addEventListener('input', e => applyFilter(e.target.value));
+
+/* ---------------- Mobile sidebar drawer ---------------- */
+const sideNav = document.querySelector('.side');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
+const menuToggle = document.getElementById('menuToggle');
+function openSidebar() { sideNav.classList.add('open'); sidebarOverlay.classList.add('show'); }
+function closeSidebar() { sideNav.classList.remove('open'); sidebarOverlay.classList.remove('show'); }
+menuToggle.addEventListener('click', () => {
+  sideNav.classList.contains('open') ? closeSidebar() : openSidebar();
+});
+sidebarOverlay.addEventListener('click', closeSidebar);
+// Close the drawer after picking a nav item on mobile (delegated so it also
+// covers the office items, which are added dynamically further below).
+sideNav.addEventListener('click', e => {
+  if (e.target.closest('.nav-item') && window.innerWidth <= 800) closeSidebar();
+});
 
 /* ---------------- Nav wiring ---------------- */
 document.querySelector('[data-view="home"]').addEventListener('click', function () { setActiveNav(this); loadHome(); });

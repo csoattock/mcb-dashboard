@@ -113,6 +113,10 @@
   tr.total-row:hover td { background: #eef2f6; }
   .grid th, .grid td { border-right: 1px solid var(--line); }
   .grid th:last-child, .grid td:last-child { border-right: none; }
+  /* Frozen (sticky) columns for office-wise pivot tables — left offset,
+     background and z-index are set inline per-cell in render() since they
+     depend on which columns are frozen (date-only vs branch-info triple). */
+  tbody tr:hover td.frozen-col { background: #f8fafc; }
   .num { font-family: var(--mono); text-align: right; }
   .credit { color: var(--credit); }
   .debit { color: var(--debit); }
@@ -235,6 +239,7 @@
             <option value="All">All Months</option>
           </select>
           <input class="search" id="searchBox" placeholder="Search this view…" style="display:none">
+          <button class="btn ghost" id="toggleViewBtn" style="display:none">⇄ Dates as Columns</button>
           <button class="btn ghost" id="downloadBtn" style="display:none">⬇ Download Excel</button>
           <button class="btn ghost" id="downloadPdfBtn" style="display:none">⬇ Download PDF</button>
           <button class="btn ghost logout-btn" id="logoutBtn">Log Out</button>
@@ -264,6 +269,14 @@ let page = 0;
 let renderTargetId = 'content';
 let selectedMonth = 'All';
 let activeReload = () => loadHome();
+
+// Office-wise tab: pivot data is cached so toggling the view (date-as-rows vs
+// date-as-columns) re-renders instantly without re-fetching. officeTransposed
+// resets to false (the default view) whenever a DIFFERENT office is opened,
+// but is preserved across month-filter reloads of the same office.
+let currentOfficeCode = null;
+let officeTransposed = false;
+let currentOfficePivot = null;
 
 /* ---------------- AUTH ---------------- */
 const ACCOUNTS = [
@@ -365,10 +378,12 @@ function toolbarFor(view) {
   const search = document.getElementById('searchBox');
   const dl = document.getElementById('downloadBtn');
   const dlPdf = document.getElementById('downloadPdfBtn');
+  const toggleBtn = document.getElementById('toggleViewBtn');
   const show = view !== 'home' && view !== 'branch';
   search.style.display = show ? '' : 'none';
   dl.style.display = show ? '' : 'none';
   dlPdf.style.display = (show && currentRole !== 'user') ? '' : 'none';
+  if (toggleBtn) toggleBtn.style.display = (view === 'office') ? '' : 'none';
 }
 
 /* ---------------- HOME ---------------- */
@@ -521,6 +536,13 @@ async function ensureBranchDirectory() {
 async function loadOffice(code) {
   currentViewLabel = 'office_' + code;
   activeReload = () => loadOffice(code);
+  // Only reset to the default (date-as-rows) view when switching to a
+  // DIFFERENT office. Re-loading the same office (e.g. changing the month
+  // filter) keeps whichever view the user toggled to.
+  if (currentOfficeCode !== code) {
+    officeTransposed = false;
+    currentOfficeCode = code;
+  }
   setHeader('Office ' + code, 'Daily collection summary' + (selectedMonth !== 'All' ? ' — ' + selectedMonth : ''));
   toolbarFor('office');
   showLoading();
@@ -555,24 +577,56 @@ async function loadOffice(code) {
     const dates = Object.keys(dateMap).sort((a, b) => new Date(a) - new Date(b));
     const branchCodes = branches.map(b => b.code);
 
+    let grand = 0;
+    const branchColumnTotals = {};
+    branchCodes.forEach(bc => { branchColumnTotals[bc] = 0; });
+    const dateTotals = {};
+    dates.forEach(d => {
+      let rowTotal = 0;
+      branchCodes.forEach(bc => {
+        const v = dateMap[d][bc] || 0;
+        rowTotal += v;
+        branchColumnTotals[bc] += v;
+      });
+      dateTotals[d] = rowTotal;
+      grand += rowTotal;
+    });
+
+    // Cache the pivot so renderOfficeTable() can redraw either view instantly.
+    currentOfficePivot = { code, branches, branchCodes, dates, dateMap, branchColumnTotals, dateTotals, grand };
+
+    const abstractHtml = '<div class="cards">' +
+      card('Days Recorded', dates.length) +
+      card('Branches', branches.length) +
+      card('Grand Total Collected', fmtMoney(grand), 'credit') +
+      '</div>';
+    document.getElementById('content').innerHTML = abstractHtml + '<div id="officeTableArea"></div>';
+    renderOfficeTable();
+  } catch (err) { showError(err); }
+
+}
+
+// Builds the header/body rows for whichever office view is active and hands
+// them to onData(). officeTransposed === false (default): dates as rows,
+// branch info as 3 sticky header rows. officeTransposed === true: dates as
+// column headers, branch info (BRANCH / MIS CODE / BR.CODE) as the first 3
+// frozen columns.
+function renderOfficeTable() {
+  if (!currentOfficePivot) return;
+  const { branches, branchCodes, dates, dateMap, branchColumnTotals, dateTotals, grand } = currentOfficePivot;
+  let rows;
+  if (!officeTransposed) {
     const headerRows = [
       ['BRANCH'].concat(branches.map(b => b.name), ['ALL BRANCHES']),
       ['MIS CODE'].concat(branches.map(b => b.mis), ['—']),
       ['BR.CODE'].concat(branches.map(b => b.code), ['TOTAL'])
     ];
-    let grand = 0;
-    const branchColumnTotals = {};
-    branchCodes.forEach(bc => { branchColumnTotals[bc] = 0; });
-
     const bodyRows = dates.map(d => {
-      let rowTotal = 0;
       const values = branchCodes.map(bc => {
-        const v = dateMap[d][bc] || 0;
-        rowTotal += v;
-        branchColumnTotals[bc] += v;
+        const v = (dateMap[d] && dateMap[d][bc]) || 0;
         return v ? v.toFixed(2) : '';
       });
-      grand += rowTotal;
+      const rowTotal = dateTotals[d] || 0;
       return [d].concat(values, [rowTotal ? rowTotal.toFixed(2) : '']);
     });
     // Bottom TOTAL row: per-branch column sums, with the grand total in the
@@ -583,17 +637,37 @@ async function loadOffice(code) {
         [grand ? grand.toFixed(2) : '']
       )
     );
-
-    const abstractHtml = '<div class="cards">' +
-      card('Days Recorded', dates.length) +
-      card('Branches', branches.length) +
-      card('Grand Total Collected', fmtMoney(grand), 'credit') +
-      '</div>';
-    document.getElementById('content').innerHTML = abstractHtml + '<div id="officeTableArea"></div>';
-    onData(headerRows.concat(bodyRows), 3, 'officeTableArea');
-  } catch (err) { showError(err); }
-
+    rows = headerRows.concat(bodyRows);
+    onData(rows, 3, 'officeTableArea');
+  } else {
+    const headerRow = ['BRANCH', 'MIS CODE', 'BR.CODE'].concat(dates.map(d => formatDateDMY_(d)), ['TOTAL']);
+    const bodyRows = branches.map(b => {
+      const values = dates.map(d => {
+        const v = (dateMap[d] && dateMap[d][b.code]) || 0;
+        return v ? v.toFixed(2) : '';
+      });
+      const total = branchColumnTotals[b.code] || 0;
+      return [b.name, b.mis, b.code].concat(values, [total ? total.toFixed(2) : '']);
+    });
+    // Bottom TOTAL row: BRANCH/MIS/BR.CODE cells left blank, per-date column
+    // sums across, grand total in the final TOTAL column.
+    bodyRows.push(
+      ['TOTAL', '', ''].concat(
+        dates.map(d => (dateTotals[d] ? dateTotals[d].toFixed(2) : '')),
+        [grand ? grand.toFixed(2) : '']
+      )
+    );
+    rows = [headerRow].concat(bodyRows);
+    onData(rows, 1, 'officeTableArea');
+  }
+  const toggleBtn = document.getElementById('toggleViewBtn');
+  if (toggleBtn) toggleBtn.textContent = officeTransposed ? '⇄ Dates as Rows' : '⇄ Dates as Columns';
 }
+
+document.getElementById('toggleViewBtn').addEventListener('click', () => {
+  officeTransposed = !officeTransposed;
+  renderOfficeTable();
+});
 
 function onData(rows, headerRowCount, targetId) {
   renderTargetId = targetId;
@@ -618,17 +692,53 @@ function applyFilter(term) {
 }
 
 function lastHeaderRow() { return currentHeaderRows[currentHeaderRows.length - 1] || []; }
+// Identifies which table shape is currently rendered:
+//  'office'   — office-wise tab, default view: dates as rows, 3 header rows
+//               (BRANCH / MIS CODE / BR.CODE) for the branch columns.
+//  'office-t' — office-wise tab, toggled view: dates as column headers,
+//               BRANCH/MIS CODE/BR.CODE as the first 3 (frozen) columns.
+//  'normal'   — Statement / Reversal / Branch-wise statement (unchanged).
+function tableKind() {
+  if (currentViewLabel.startsWith('office_')) return officeTransposed ? 'office-t' : 'office';
+  return 'normal';
+}
+// Frozen (sticky-left) column count per table kind, and their pixel widths —
+// only the office-wise tabs freeze columns, per the requested change.
+function frozenColCount() {
+  const k = tableKind();
+  if (k === 'office') return 1;
+  if (k === 'office-t') return 3;
+  return 0;
+}
+function frozenColWidths() {
+  const k = tableKind();
+  if (k === 'office') return [110];
+  if (k === 'office-t') return [190, 90, 90];
+  return [];
+}
+function frozenColLeft(i) {
+  const widths = frozenColWidths();
+  let left = 0;
+  for (let j = 0; j < i; j++) left += widths[j];
+  return left;
+}
 function isNumericCol(i) {
+  const k = tableKind();
+  if (k === 'office') return i > 0;
+  if (k === 'office-t') return i >= 3;
   const label = String(lastHeaderRow()[i] || '');
-  return /debit|credit|balance/i.test(label) || (currentHeaderRows.length === 3 && i > 0);
+  return /debit|credit|balance/i.test(label);
 }
 function isWrapCol(i) {
   return /description/i.test(String(lastHeaderRow()[i] || ''));
 }
 function isDateCol(i) {
-  // Office pivot table always has the date as its first column, regardless
-  // of header label (its header rows say 'BRANCH'/'MIS CODE'/'BR.CODE').
-  if (currentHeaderRows.length === 3) return i === 0;
+  const k = tableKind();
+  // Default office pivot table always has the date as its first column,
+  // regardless of header label (its header rows say 'BRANCH'/'MIS CODE'/'BR.CODE').
+  if (k === 'office') return i === 0;
+  // Transposed view has dates as column headers, not a data column.
+  if (k === 'office-t') return false;
   return /^date$/i.test(String(lastHeaderRow()[i] || ''));
 }
 function colWidth(i) {
@@ -643,7 +753,10 @@ function colWidth(i) {
 }
 
 function render() {
-  const isOfficeView = currentHeaderRows.length === 3;
+  const kind = tableKind();
+  const isOfficeView = kind === 'office' || kind === 'office-t';
+  const frozenCount = frozenColCount();
+  const frozenWidths = frozenColWidths();
   const start = page * PAGE_SIZE;
   const pageRows = filteredRows.slice(start, start + PAGE_SIZE);
 
@@ -652,10 +765,18 @@ function render() {
     html += '<tr>';
     hRow.forEach((h, i) => {
       const align = isNumericCol(i) ? 'text-align:right' : '';
-      const w = isOfficeView ? null : colWidth(i);
-      const widthStyle = w ? ('width:' + w + ';') : '';
+      const frozen = i < frozenCount;
+      const w = frozen ? (frozenWidths[i] + 'px') : (isOfficeView ? null : colWidth(i));
+      const widthStyle = w ? ('width:' + w + ';min-width:' + w + ';') : '';
       const wrapCls = (!isOfficeView && isWrapCol(i)) ? ' wrap' : '';
-      html += '<th class="' + wrapCls + '" style="top:' + (ri * HEADER_ROW_HEIGHT) + 'px;' + align + widthStyle + '">' + escapeHtml_(h) + '</th>';
+      let style = 'top:' + (ri * HEADER_ROW_HEIGHT) + 'px;' + align + widthStyle;
+      // Frozen header cells are sticky on BOTH axes (top AND left) so the
+      // branch/date corner stays pinned while scrolling either direction.
+      if (frozen) {
+        style += 'position:sticky;left:' + frozenColLeft(i) + 'px;z-index:4;background:#eef2f6;';
+        if (i === frozenCount - 1) style += 'box-shadow:2px 0 4px -2px rgba(0,0,0,0.25);';
+      }
+      html += '<th class="' + wrapCls + '" style="' + style + '">' + escapeHtml_(h) + '</th>';
     });
     html += '</tr>';
   });
@@ -679,7 +800,14 @@ function render() {
       } else {
         display = escapeHtml_(cell);
       }
-      html += '<td class="' + cls + '">' + display + '</td>';
+      const frozen = i < frozenCount;
+      let tdStyle = '';
+      if (frozen) {
+        cls += ' frozen-col';
+        tdStyle = 'position:sticky;left:' + frozenColLeft(i) + 'px;z-index:1;background:' + (isTotalRow ? '#eef2f6' : '#ffffff') + ';';
+        if (i === frozenCount - 1) tdStyle += 'box-shadow:2px 0 4px -2px rgba(0,0,0,0.25);';
+      }
+      html += '<td class="' + cls + '"' + (tdStyle ? ' style="' + tdStyle + '"' : '') + '>' + display + '</td>';
     });
     html += '</tr>';
   });
@@ -813,9 +941,16 @@ function formatDateDMY_(val) {
   return dd + '-' + months[d.getMonth()] + '-' + d.getFullYear();
 }
 function computeDateRange() {
-  const isOfficeView = currentHeaderRows.length === 3;
+  const kind = tableKind();
+  // Transposed office view has dates as column headers, not a data column —
+  // read the range from the cached pivot's (already ascending-sorted) dates.
+  if (kind === 'office-t') {
+    const dates = (currentOfficePivot && currentOfficePivot.dates) || [];
+    if (dates.length === 0) return { from: '—', to: '—' };
+    return { from: formatDateDMY_(dates[0]), to: formatDateDMY_(dates[dates.length - 1]) };
+  }
   let dateIdx = 0;
-  if (!isOfficeView) {
+  if (kind !== 'office') {
     dateIdx = lastHeaderRow().findIndex(h => /^date$/i.test(h));
     if (dateIdx === -1) dateIdx = 0;
   }

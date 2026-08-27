@@ -240,6 +240,8 @@
           </select>
           <input class="search" id="searchBox" placeholder="Search this view…" style="display:none">
           <button class="btn ghost" id="toggleViewBtn" style="display:none">⇄ Dates as Columns</button>
+          <button class="btn ghost" id="amountModeBtn" style="display:none">💳 View Debit</button>
+          <button class="btn ghost" id="hideZeroBtn" style="display:none">👁 View All Branches</button>
           <button class="btn ghost" id="downloadBtn" style="display:none">⬇ Download Excel</button>
           <button class="btn ghost" id="downloadPdfBtn" style="display:none">⬇ Download PDF</button>
           <button class="btn ghost logout-btn" id="logoutBtn">Log Out</button>
@@ -271,11 +273,20 @@ let selectedMonth = 'All';
 let activeReload = () => loadHome();
 
 // Office-wise tab: pivot data is cached so toggling the view (date-as-rows vs
-// date-as-columns) re-renders instantly without re-fetching. officeTransposed
-// resets to false (the default view) whenever a DIFFERENT office is opened,
-// but is preserved across month-filter reloads of the same office.
+// date-as-columns), the credit/debit amount mode, and the zero-branch filter
+// all re-render instantly without re-fetching.
+//  - officeTransposed defaults to false (dates-as-rows view).
+//  - hideZeroBranches defaults to true — branches with 0 collection for the
+//    selected period are hidden by default; the button switches to viewing
+//    all branches.
+//  - officeAmountMode defaults to 'credit' (current behaviour); toggles to
+//    'debit' to view debit amounts instead.
+// All three reset to their defaults whenever a DIFFERENT office is opened,
+// but are preserved across month-filter reloads of the same office.
 let currentOfficeCode = null;
 let officeTransposed = false;
+let hideZeroBranches = true;
+let officeAmountMode = 'credit';
 let currentOfficePivot = null;
 
 /* ---------------- AUTH ---------------- */
@@ -379,11 +390,15 @@ function toolbarFor(view) {
   const dl = document.getElementById('downloadBtn');
   const dlPdf = document.getElementById('downloadPdfBtn');
   const toggleBtn = document.getElementById('toggleViewBtn');
+  const hideZeroBtn = document.getElementById('hideZeroBtn');
+  const amountBtn = document.getElementById('amountModeBtn');
   const show = view !== 'home' && view !== 'branch';
   search.style.display = show ? '' : 'none';
   dl.style.display = show ? '' : 'none';
   dlPdf.style.display = (show && currentRole !== 'user') ? '' : 'none';
   if (toggleBtn) toggleBtn.style.display = (view === 'office') ? '' : 'none';
+  if (hideZeroBtn) hideZeroBtn.style.display = (view === 'office') ? '' : 'none';
+  if (amountBtn) amountBtn.style.display = (view === 'office') ? '' : 'none';
 }
 
 /* ---------------- HOME ---------------- */
@@ -536,11 +551,13 @@ async function ensureBranchDirectory() {
 async function loadOffice(code) {
   currentViewLabel = 'office_' + code;
   activeReload = () => loadOffice(code);
-  // Only reset to the default (date-as-rows) view when switching to a
-  // DIFFERENT office. Re-loading the same office (e.g. changing the month
-  // filter) keeps whichever view the user toggled to.
+  // Only reset to the defaults when switching to a DIFFERENT office.
+  // Re-loading the same office (e.g. changing the month filter) keeps
+  // whichever view/mode/filter the user is currently on.
   if (currentOfficeCode !== code) {
     officeTransposed = false;
+    hideZeroBranches = true;
+    officeAmountMode = 'credit';
     currentOfficeCode = code;
   }
   setHeader('Office ' + code, 'Daily collection summary' + (selectedMonth !== 'All' ? ' — ' + selectedMonth : ''));
@@ -560,101 +577,135 @@ async function loadOffice(code) {
     const monthIdx = header.findIndex(h => /^month$/i.test(h));
     const branchIdx = header.findIndex(h => /^branch$/i.test(h));
     const creditIdx = header.findIndex(h => /credit/i.test(h));
+    const debitIdx = header.findIndex(h => /debit/i.test(h));
 
     const branchCodeSet = new Set(branches.map(b => b.code));
     let data = stRows.slice(1).filter(r => branchCodeSet.has(String(r[branchIdx]).trim()));
     if (selectedMonth !== 'All') data = data.filter(r => r[monthIdx] === selectedMonth);
 
-    // Pivot: date -> branchCode -> summed credit for that day.
+    // Pivot: date -> branchCode -> { credit, debit } summed for that day.
     const dateMap = {};
     data.forEach(r => {
       const d = r[dateIdx];
       const b = String(r[branchIdx]).trim();
       const c = parseFloat(String(r[creditIdx]).replace(/,/g, '')) || 0;
+      const de = debitIdx !== -1 ? (parseFloat(String(r[debitIdx]).replace(/,/g, '')) || 0) : 0;
       if (!dateMap[d]) dateMap[d] = {};
-      dateMap[d][b] = (dateMap[d][b] || 0) + c;
+      if (!dateMap[d][b]) dateMap[d][b] = { credit: 0, debit: 0 };
+      dateMap[d][b].credit += c;
+      dateMap[d][b].debit += de;
     });
     const dates = Object.keys(dateMap).sort((a, b) => new Date(a) - new Date(b));
     const branchCodes = branches.map(b => b.code);
 
-    let grand = 0;
-    const branchColumnTotals = {};
-    branchCodes.forEach(bc => { branchColumnTotals[bc] = 0; });
-    const dateTotals = {};
+    // Column/row/grand totals kept separately per amount mode so toggling
+    // credit <-> debit is an instant re-render, no re-fetch or re-sum.
+    const branchColumnTotals = { credit: {}, debit: {} };
+    branchCodes.forEach(bc => { branchColumnTotals.credit[bc] = 0; branchColumnTotals.debit[bc] = 0; });
+    const dateTotals = { credit: {}, debit: {} };
+    const grand = { credit: 0, debit: 0 };
     dates.forEach(d => {
-      let rowTotal = 0;
+      let rowCredit = 0, rowDebit = 0;
       branchCodes.forEach(bc => {
-        const v = dateMap[d][bc] || 0;
-        rowTotal += v;
-        branchColumnTotals[bc] += v;
+        const cell = (dateMap[d] && dateMap[d][bc]) || { credit: 0, debit: 0 };
+        rowCredit += cell.credit;
+        rowDebit += cell.debit;
+        branchColumnTotals.credit[bc] += cell.credit;
+        branchColumnTotals.debit[bc] += cell.debit;
       });
-      dateTotals[d] = rowTotal;
-      grand += rowTotal;
+      dateTotals.credit[d] = rowCredit;
+      dateTotals.debit[d] = rowDebit;
+      grand.credit += rowCredit;
+      grand.debit += rowDebit;
     });
 
-    // Cache the pivot so renderOfficeTable() can redraw either view instantly.
+    // Cache the pivot so renderOfficeTable() can redraw any view/mode instantly.
     currentOfficePivot = { code, branches, branchCodes, dates, dateMap, branchColumnTotals, dateTotals, grand };
 
-    const abstractHtml = '<div class="cards">' +
-      card('Days Recorded', dates.length) +
-      card('Branches', branches.length) +
-      card('Grand Total Collected', fmtMoney(grand), 'credit') +
-      '</div>';
-    document.getElementById('content').innerHTML = abstractHtml + '<div id="officeTableArea"></div>';
+    document.getElementById('content').innerHTML = '<div id="officeAbstract"></div><div id="officeTableArea"></div>';
     renderOfficeTable();
   } catch (err) { showError(err); }
 
 }
 
-// Builds the header/body rows for whichever office view is active and hands
-// them to onData(). officeTransposed === false (default): dates as rows,
-// branch info as 3 sticky header rows. officeTransposed === true: dates as
-// column headers, branch info (BRANCH / MIS CODE / BR.CODE) as the first 3
-// frozen columns.
+// Builds the abstract cards and header/body rows for whichever office
+// view/mode is active, and hands the rows to onData().
+//  - officeTransposed === false (default): dates as rows, branch info as
+//    3 sticky header rows. === true: dates as column headers, branch info
+//    (BRANCH / MIS CODE / BR.CODE) as the first 3 frozen columns.
+//  - hideZeroBranches === true (default): branches with 0 total for the
+//    active amount mode are omitted.
+//  - officeAmountMode: 'credit' (default) or 'debit' — selects which of the
+//    cached credit/debit pivots is displayed.
 function renderOfficeTable() {
   if (!currentOfficePivot) return;
-  const { branches, branchCodes, dates, dateMap, branchColumnTotals, dateTotals, grand } = currentOfficePivot;
+  const { branches, dates, dateMap, branchColumnTotals, dateTotals, grand } = currentOfficePivot;
+  const amt = officeAmountMode; // 'credit' | 'debit'
+  const colTotals = branchColumnTotals[amt];
+  const rowTotals = dateTotals[amt];
+  const grandTotal = grand[amt];
+
+  // A branch's period total is the sum of its (non-negative) daily amounts
+  // for the active mode, so a 0 total means every day was 0 for that mode —
+  // safe to filter without affecting any date's TOTAL column or the grand
+  // total, since zero branches never contributed to those sums anyway.
+  const branchesToShow = hideZeroBranches
+    ? branches.filter(b => (colTotals[b.code] || 0) > 0)
+    : branches;
+  const branchCodes = branchesToShow.map(b => b.code);
+
+  const abstractEl = document.getElementById('officeAbstract');
+  if (abstractEl) {
+    abstractEl.innerHTML = '<div class="cards">' +
+      card('Days Recorded', dates.length) +
+      card('Branches Shown', branchesToShow.length + (branchesToShow.length !== branches.length ? ' of ' + branches.length : '')) +
+      card('Grand Total ' + (amt === 'credit' ? 'Collected' : 'Debited'), fmtMoney(grandTotal), amt) +
+      '</div>';
+  }
+
   let rows;
   if (!officeTransposed) {
     const headerRows = [
-      ['BRANCH'].concat(branches.map(b => b.name), ['ALL BRANCHES']),
-      ['MIS CODE'].concat(branches.map(b => b.mis), ['—']),
-      ['BR.CODE'].concat(branches.map(b => b.code), ['TOTAL'])
+      ['BRANCH'].concat(branchesToShow.map(b => b.name), ['ALL BRANCHES']),
+      ['MIS CODE'].concat(branchesToShow.map(b => b.mis), ['—']),
+      ['BR.CODE'].concat(branchesToShow.map(b => b.code), ['TOTAL'])
     ];
     const bodyRows = dates.map(d => {
       const values = branchCodes.map(bc => {
-        const v = (dateMap[d] && dateMap[d][bc]) || 0;
+        const cell = (dateMap[d] && dateMap[d][bc]) || { credit: 0, debit: 0 };
+        const v = cell[amt] || 0;
         return v ? v.toFixed(2) : '';
       });
-      const rowTotal = dateTotals[d] || 0;
-      return [d].concat(values, [rowTotal ? rowTotal.toFixed(2) : '']);
+      const rt = rowTotals[d] || 0;
+      return [d].concat(values, [rt ? rt.toFixed(2) : '']);
     });
     // Bottom TOTAL row: per-branch column sums, with the grand total in the
     // 'ALL BRANCHES' column at the end so it lines up with the per-row totals.
     bodyRows.push(
       ['TOTAL'].concat(
-        branchCodes.map(bc => branchColumnTotals[bc] ? branchColumnTotals[bc].toFixed(2) : ''),
-        [grand ? grand.toFixed(2) : '']
+        branchCodes.map(bc => colTotals[bc] ? colTotals[bc].toFixed(2) : ''),
+        [grandTotal ? grandTotal.toFixed(2) : '']
       )
     );
     rows = headerRows.concat(bodyRows);
     onData(rows, 3, 'officeTableArea');
   } else {
     const headerRow = ['BRANCH', 'MIS CODE', 'BR.CODE'].concat(dates.map(d => formatDateDMY_(d)), ['TOTAL']);
-    const bodyRows = branches.map(b => {
+    const bodyRows = branchesToShow.map(b => {
       const values = dates.map(d => {
-        const v = (dateMap[d] && dateMap[d][b.code]) || 0;
+        const cell = (dateMap[d] && dateMap[d][b.code]) || { credit: 0, debit: 0 };
+        const v = cell[amt] || 0;
         return v ? v.toFixed(2) : '';
       });
-      const total = branchColumnTotals[b.code] || 0;
+      const total = colTotals[b.code] || 0;
       return [b.name, b.mis, b.code].concat(values, [total ? total.toFixed(2) : '']);
     });
     // Bottom TOTAL row: BRANCH/MIS/BR.CODE cells left blank, per-date column
     // sums across, grand total in the final TOTAL column.
     bodyRows.push(
       ['TOTAL', '', ''].concat(
-        dates.map(d => (dateTotals[d] ? dateTotals[d].toFixed(2) : '')),
-        [grand ? grand.toFixed(2) : '']
+        dates.map(d => (rowTotals[d] ? rowTotals[d].toFixed(2) : '')),
+        [grandTotal ? grandTotal.toFixed(2) : '']
       )
     );
     rows = [headerRow].concat(bodyRows);
@@ -662,10 +713,29 @@ function renderOfficeTable() {
   }
   const toggleBtn = document.getElementById('toggleViewBtn');
   if (toggleBtn) toggleBtn.textContent = officeTransposed ? '⇄ Dates as Rows' : '⇄ Dates as Columns';
+  const hideZeroBtn = document.getElementById('hideZeroBtn');
+  if (hideZeroBtn) {
+    const hiddenCount = branches.length - branchesToShow.length;
+    hideZeroBtn.textContent = hideZeroBranches
+      ? '👁 View All Branches' + (hiddenCount ? ' (' + hiddenCount + ' hidden)' : '')
+      : '☐ Hide Zero Branches';
+  }
+  const amountBtn = document.getElementById('amountModeBtn');
+  if (amountBtn) amountBtn.textContent = amt === 'credit' ? '💳 View Debit' : '💳 View Credit';
 }
 
 document.getElementById('toggleViewBtn').addEventListener('click', () => {
   officeTransposed = !officeTransposed;
+  renderOfficeTable();
+});
+
+document.getElementById('hideZeroBtn').addEventListener('click', () => {
+  hideZeroBranches = !hideZeroBranches;
+  renderOfficeTable();
+});
+
+document.getElementById('amountModeBtn').addEventListener('click', () => {
+  officeAmountMode = officeAmountMode === 'credit' ? 'debit' : 'credit';
   renderOfficeTable();
 });
 
@@ -791,6 +861,10 @@ function render() {
       if (!isOfficeView && isWrapCol(i)) cls += ' wrap';
       if (label === 'credit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' credit';
       if (label === 'debit' && Number(String(cell).replace(/,/g,'')) > 0) cls += ' debit';
+      // Office pivot tables (both view modes) don't have literal 'Credit'/
+      // 'Debit' column labels — color their amount cells by the active
+      // officeAmountMode instead.
+      if (isOfficeView && isNumericCol(i) && cell !== '') cls += ' ' + officeAmountMode;
       const numVal = Number(String(cell).replace(/,/g, ''));
       let display;
       if (isDateCol(i) && cell !== '' && cell !== 'TOTAL') {

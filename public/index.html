@@ -308,29 +308,33 @@ function applyRoleRestrictions() {
   }
 }
 
-function doLogin(username, password) {
+async function doLogin(username, password) {
   const match = ACCOUNTS.find(a => a.user === username && a.pass === password);
   if (!match) return false;
   currentRole = match.role;
   document.getElementById('loginWrap').style.display = 'none';
   document.getElementById('appRoot').style.display = '';
   applyRoleRestrictions();
-  ensureMonthOptions();
+  // Wait for month options (and the latest-month default) to be resolved
+  // before loading data, so Home/Status render with the correct month
+  // pre-selected instead of briefly showing "All".
+  await ensureMonthOptions();
   loadHome();
   loadStatus();
   return true;
 }
 
-document.getElementById('loginForm').addEventListener('submit', function (e) {
+document.getElementById('loginForm').addEventListener('submit', async function (e) {
   e.preventDefault();
   const user = document.getElementById('loginUser').value.trim();
   const pass = document.getElementById('loginPass').value;
   const errEl = document.getElementById('loginError');
-  if (!doLogin(user, pass)) {
+  const form = this;
+  if (!(await doLogin(user, pass))) {
     errEl.textContent = 'Invalid username or password.';
   } else {
     errEl.textContent = '';
-    this.reset();
+    form.reset();
   }
 });
 
@@ -355,6 +359,12 @@ async function ensureMonthOptions() {
   sel.innerHTML = '<option value="All">All Months</option>' +
     months.map(m => '<option value="' + escapeHtml_(m) + '">' + escapeHtml_(m) + '</option>').join('');
   sel.dataset.loaded = '1';
+  // Default the view to the latest available month (e.g. 08/2026) instead
+  // of "All Months". Falls back to "All" only if no months were found.
+  if (months.length) {
+    selectedMonth = months[0];
+    sel.value = months[0];
+  }
 }
 document.getElementById('monthSelect').addEventListener('change', e => {
   selectedMonth = e.target.value;

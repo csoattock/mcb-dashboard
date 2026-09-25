@@ -594,9 +594,18 @@ async function loadOffice(code) {
     if (selectedMonth !== 'All') data = data.filter(r => r[monthIdx] === selectedMonth);
 
     // Pivot: date -> branchCode -> { credit, debit } summed for that day.
+    // Dates are bucketed under a normalized 'YYYY-MM-DD' key (see
+    // normalizeDateKey_) rather than the raw sheet value. Without this, a
+    // day that has only debit rows (e.g. a bank-charge entry on a day with
+    // no collections) but no credit rows can end up keyed differently than
+    // the same calendar day's credit rows — if that day's debit-only entry
+    // was typed in a different date format than the bulk credit data, it
+    // silently becomes a second, mismatched key. That's what made a date
+    // like 06-Sep or 13-Sep effectively vanish from the Credit pivot (its
+    // real key had no credit rows under it) while still showing in Debit.
     const dateMap = {};
     data.forEach(r => {
-      const d = r[dateIdx];
+      const d = normalizeDateKey_(r[dateIdx]);
       const b = String(r[branchIdx]).trim();
       const c = parseFloat(String(r[creditIdx]).replace(/,/g, '')) || 0;
       const de = debitIdx !== -1 ? (parseFloat(String(r[debitIdx]).replace(/,/g, '')) || 0) : 0;
@@ -605,7 +614,9 @@ async function loadOffice(code) {
       dateMap[d][b].credit += c;
       dateMap[d][b].debit += de;
     });
-    const dates = Object.keys(dateMap).sort((a, b) => new Date(a) - new Date(b));
+    // Canonical 'YYYY-MM-DD' keys sort correctly as plain strings — no Date
+    // parsing (and no timezone-shift risk) needed here.
+    const dates = Object.keys(dateMap).sort();
     const branchCodes = branches.map(b => b.code);
 
     // Column/row/grand totals kept separately per amount mode so toggling
@@ -1017,10 +1028,31 @@ const BANK_INFO = {
   iban: 'PK86MUCB0102801010014543'
 };
 
+// Normalizes any date-like cell value to a single canonical 'YYYY-MM-DD'
+// key. Apps Script serializes real Date-typed sheet cells as ISO timestamps
+// (which can land on the previous day once run through new Date() and a
+// timezone conversion), while a manually-typed text cell for the same
+// column passes through untouched — so the exact same calendar day can
+// otherwise produce two different keys depending on how a given row's date
+// was entered. Every place that buckets rows by date should key off this,
+// not the raw value.
+function normalizeDateKey_(val) {
+  const s = String(val).trim();
+  const iso = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (iso) return iso[1]; // already ISO — take the date part as-is, no Date()/timezone conversion
+  const d = new Date(s); // no 'Z'/time in other formats, so this parses as local time — safe
+  if (isNaN(d.getTime())) return s; // unparseable — keep raw value rather than losing the row
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
 function formatDateDMY_(val) {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  // Canonical 'YYYY-MM-DD' (or an ISO timestamp) — read the date part
+  // directly by string, skipping new Date() so no timezone shift can move
+  // it to the adjacent day.
+  const iso = String(val).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return iso[3] + '-' + months[Number(iso[2]) - 1] + '-' + iso[1];
   const d = new Date(val);
   if (isNaN(d.getTime())) return String(val);
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const dd = String(d.getDate()).padStart(2, '0');
   return dd + '-' + months[d.getMonth()] + '-' + d.getFullYear();
 }

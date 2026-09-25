@@ -675,10 +675,17 @@ function renderOfficeTable() {
     : branches;
   const branchCodes = branchesToShow.map(b => b.code);
 
+  // Same rule as branches, applied to dates: a date whose total for the
+  // ACTIVE amount mode is 0 is omitted. This is keyed off rowTotals[amt],
+  // so it's evaluated fresh per mode — a date hidden in Credit (all-credit
+  // 0 that day) is not necessarily hidden in Debit, and vice versa, which
+  // is exactly the symmetry that was missing before.
+  const datesToShow = dates.filter(d => (rowTotals[d] || 0) > 0);
+
   const abstractEl = document.getElementById('officeAbstract');
   if (abstractEl) {
     abstractEl.innerHTML = '<div class="cards">' +
-      card('Days Recorded', dates.length) +
+      card('Days Recorded', datesToShow.length + (datesToShow.length !== dates.length ? ' of ' + dates.length : '')) +
       card('Branches Shown', branchesToShow.length + (branchesToShow.length !== branches.length ? ' of ' + branches.length : '')) +
       card('Grand Total ' + (amt === 'credit' ? 'Collected' : 'Debited'), fmtMoney(grandTotal), amt) +
       '</div>';
@@ -691,7 +698,7 @@ function renderOfficeTable() {
       ['MIS CODE'].concat(branchesToShow.map(b => b.mis), ['—']),
       ['BR.CODE'].concat(branchesToShow.map(b => b.code), ['TOTAL'])
     ];
-    const bodyRows = dates.map(d => {
+    const bodyRows = datesToShow.map(d => {
       const values = branchCodes.map(bc => {
         const cell = (dateMap[d] && dateMap[d][bc]) || { credit: 0, debit: 0 };
         const v = cell[amt] || 0;
@@ -711,9 +718,9 @@ function renderOfficeTable() {
     rows = headerRows.concat(bodyRows);
     onData(rows, 3, 'officeTableArea');
   } else {
-    const headerRow = ['BRANCH', 'MIS CODE', 'BR.CODE'].concat(dates.map(d => formatDateDMY_(d)), ['TOTAL']);
+    const headerRow = ['BRANCH', 'MIS CODE', 'BR.CODE'].concat(datesToShow.map(d => formatDateDMY_(d)), ['TOTAL']);
     const bodyRows = branchesToShow.map(b => {
-      const values = dates.map(d => {
+      const values = datesToShow.map(d => {
         const cell = (dateMap[d] && dateMap[d][b.code]) || { credit: 0, debit: 0 };
         const v = cell[amt] || 0;
         return v ? v.toFixed(2) : '';
@@ -725,7 +732,7 @@ function renderOfficeTable() {
     // sums across, grand total in the final TOTAL column.
     bodyRows.push(
       ['TOTAL', '', ''].concat(
-        dates.map(d => (rowTotals[d] ? rowTotals[d].toFixed(2) : '')),
+        datesToShow.map(d => (rowTotals[d] ? rowTotals[d].toFixed(2) : '')),
         [grandTotal ? grandTotal.toFixed(2) : '']
       )
     );
